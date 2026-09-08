@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FXCM 盯盘</title>
+<style>
+  :root {
+    --bg: #131722; --panel: #1e222d; --border: #2a2e39;
+    --text: #d1d4dc; --muted: #787b86;
+    --up: #26a69a; --down: #ef5350; --accent: #2962ff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  .brand { font-weight: 600; font-size: 15px; }
+  .status { color: var(--muted); font-size: 12px; }
+  .status.ok { color: var(--up); }
+  .status.bad { color: var(--down); }
+  nav { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .tabs { display: flex; gap: 4px; }
+  .tab { padding: 5px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); user-select: none; }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--accent); color: #fff; }
+  .quote { margin-left: auto; font-variant-numeric: tabular-nums; display: flex; gap: 14px; align-items: baseline; }
+  .quote .bid, .quote .ask { font-size: 18px; font-weight: 600; }
+  .quote .label { color: var(--muted); font-size: 12px; margin-right: 4px; }
+  .quote .spread { color: var(--muted); font-size: 12px; }
+  #chart { height: calc(100vh - 118px); }
+  footer { padding: 6px 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">FXCM 盯盘 <span style="color:var(--muted);font-size:12px">（只读）</span></div>
+  <div id="status" class="status">连接中…</div>
+</header>
+<nav>
+  <div id="symbol-tabs" class="tabs"></div>
+  <div id="tf-tabs" class="tabs"></div>
+  <div id="quote" class="quote"></div>
+</nav>
+<div id="chart"></div>
+<footer id="csv-note"></footer>
+
+<script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
+<script>
+"use strict";
+const SYMBOLS = ["XAU/USD", "USD/JPY", "EUR/USD"];
+const TFS = { "1s": 1, "1m": 60, "15m": 900, "1h": 3600 };
+const DIGITS = { "XAU/USD": 2, "USD/JPY": 3, "EUR/USD": 5 };
+const TZ_OFFSET_H = -new Date().getTimezoneOffset() / 60;
+const toChartTime = ts => Math.floor(ts / TFS[activeTf]) * TFS[activeTf] + TZ_OFFSET_H * 3600;
+
+let activeSymbol = SYMBOLS[0];
+let activeTf = "1s";
+let series = null;
+let lastBar = null;
+let ws = null;
+
+const chart = LightweightCharts.createChart(document.getElementById("chart"), {
+  layout: { background: { color: "var(--bg)" }, textColor: "#787b86" },
+  grid: { vertLines: { color: "#1c2030" }, horzLines: { color: "#1c2030" } },
+  timeScale: { timeVisible: true, secondsVisible: true, rightOffset: 6 },
+  priceScale: { borderColor: "#2a2e39" },
+  crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+});
+
+function makeSeries() {
+  if (series) chart.removeSeries(series);
+  const digits = DIGITS[activeSymbol] ?? 5;
+  series = chart.addCandlestickSeries({
+    upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
+    wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+    priceFormat: { type: "price", precision: digits, minMove: Math.pow(10, -digits) },
+  });
+}
+
+async function loadCandles() {
+  makeSeries();
+  lastBar = null;
+  const resp = await fetch(`/api/candles?symbol=${encodeURIComponent(activeSymbol)}&tf=${activeTf}&limit=800`);
+  if (!resp.ok) { document.getElementById("status").textContent = "K线加载失败"; return; }
+  const bars = await resp.json();
+  const data = bars.map(b => ({
+    time: Math.floor(b.ts) + TZ_OFFSET_H * 3600,
+    open: b.open, high: b.high, low: b.low, close: b.close,
+  }));
+  if (data.length) lastBar = { ...data[data.length - 1] };
+  series.setData(data);
+}
+
+function renderQuote(q) {
+  if (!q) return;
+  const digits = DIGITS[activeSymbol] ?? 5;
+  const spread = (q.ask - q.bid).toFixed(digits);
+  document.getElementById("quote").innerHTML =
+    `<span><span class="label">买</span><span class="bid" style="color:var(--down)">${q.bid.toFixed(digits)}</span></span>` +
+    `<span><span class="label">卖</span><span class="ask" style="color:var(--up)">${q.ask.toFixed(digits)}</span></span>` +
+    `<span class="spread">点差 ${spread}</span>`;
+}
+
+function onLive(quote) {
+  if (!quote || !series) return;
+  renderQuote(quote);
+  const price = quote.bid;
+  const bucket = Math.floor(quote.ts / TFS[activeTf]) * TFS[activeTf] + TZ_OFFSET_H * 3600;
+  if (!lastBar || bucket > lastBar.time) {
+    lastBar = { time: bucket, open: price, high: price, low: price, close: price };
+  } else {
+    lastBar.high = Math.max(lastBar.high, price);
+    lastBar.low = Math.min(lastBar.low, price);
+    lastBar.close = price;
+  }
+  series.update(lastBar);
+}
+
+function connectWs() {
+  if (ws) { ws.onclose = null; ws.close(); }
+  ws = new WebSocket(`ws://${location.host}/ws?symbol=${encodeURIComponent(activeSymbol)}`);
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    onLive(msg.quotes && msg.quotes[activeSymbol]);
+  };
+}
+
+async function checkHealth() {
+  const el = document.getElementById("status");
+  try {
+    const r = await fetch("/api/health");
+    const h = await r.json();
+    if (h.status === "CONNECTED") { el.textContent = `已连接 · ${h.symbols.join(" / ")}`; el.className = "status ok"; }
+    else { el.textContent = `会话状态: ${h.status}`; el.className = "status bad"; }
+  } catch { el.textContent = "服务不可达"; el.className = "status bad"; }
+}
+
+function buildTabs() {
+  const symBox = document.getElementById("symbol-tabs");
+  SYMBOLS.forEach(s => {
+    const t = document.createElement("div");
+    t.className = "tab" + (s === activeSymbol ? " active" : "");
+    t.textContent = s;
+    t.onclick = () => {
+      if (activeSymbol === s) return;
+      activeSymbol = s;
+      symBox.querySelectorAll(".tab").forEach(e => e.classList.toggle("active", e.textContent === s));
+      loadCandles().then(connectWs);
+    };
+    symBox.appendChild(t);
+  });
+  const tfBox = document.getElementById("tf-tabs");
+  Object.keys(TFS).forEach(tf => {
+    const t = document.createElement("div");
+    t.className = "tab" + (tf === activeTf ? " active" : "");
+    t.textContent = tf;
+    t.onclick = () => {
+      if (activeTf === tf) return;
+      activeTf = tf;
+      chart.timeScale().applyOptions({ secondsVisible: TFS[tf] === 1 });
+      tfBox.querySelectorAll(".tab").forEach(e => e.classList.toggle("active", e.textContent === tf));
+      loadCandles();
+    };
+    tfBox.appendChild(t);
+  });
+}
+
+(async function init() {
+  buildTabs();
+  document.getElementById("csv-note").textContent =
+    "数据来源：本机 fxcm_daemon（OFFERS 实时行情）· 1s K线落盘 data/<品种>_1s.csv · 本页只读，不含下单功能";
+  await loadCandles();
+  connectWs();
+  checkHealth();
+  setInterval(checkHealth, 5000);
+})();
+</script>
+</body>
+</html>
