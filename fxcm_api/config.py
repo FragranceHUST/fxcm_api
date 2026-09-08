@@ -57,3 +57,21 @@ def load_config(path: str | None = None) -> tuple[Credentials, GuardSettings]:
         cred_kwargs["password"] = os.environ["FXCM_PASSWORD"]
 
     return Credentials(**cred_kwargs), GuardSettings(**guard_kwargs)
+
+
+@dataclass
+class DaemonSettings:
+    watch_symbols: list[str] = field(default_factory=lambda: ["XAU/USD", "USD/JPY", "EUR/USD"])
+    port: int = 8911                  # Web 服务监听端口（绑定 127.0.0.1）
+    data_dir: str = "data"            # 本地 CSV 存储目录（每品种一个 1s K线文件）
+    guard_enabled: bool = True        # daemon 内置 guard 循环开关
+
+
+def load_daemon_settings(path: str | None = None) -> DaemonSettings:
+    if path and os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            raw: dict[str, Any] = json.load(f)
+        known = {f.name for f in fields(DaemonSettings)}
+        kwargs = {k: v for k, v in raw.get("daemon", {}).items() if k in known}
+        return DaemonSettings(**kwargs)
+    return DaemonSettings()
