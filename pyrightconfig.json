@@ -1,0 +1,6 @@
+{
+  "typeCheckingMode": "standard",
+  "extraPaths": ["."],
+  "exclude": [".venv", "**/__pycache__"],
+  "reportMissingTypeStubs": "none"
+}

@@ -1,0 +1,26 @@
+{
+  "credentials": {
+    "user_id": "YOUR_FXCM_USER_ID",
+    "password": "YOUR_FXCM_PASSWORD",
+    "url": "www.fxcorporate.com/Hosts.jsp",
+    "connection": "demo",
+    "session_id": "",
+    "pin": ""
+  },
+  "guard": {
+    "initial_sl_pips": 20.0,
+    "be_trigger_pips": 5.0,
+    "be_buffer_pips": 1.0,
+    "use_trailing": false,
+    "trail_start_pips": 10.0,
+    "trail_dist_pips": 8.0,
+    "trail_step_pips": 1.0,
+    "min_stop_distance_pips": 0.5,
+    "poll_interval_ms": 500,
+    "dry_run": true,
+    "symbol_filter": null,
+    "pip_overrides": { "XAU/USD": 0.1 },
+    "verbose": false,
+    "account_id": ""
+  }
+}
