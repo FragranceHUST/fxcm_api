@@ -9,18 +9,24 @@
   },
   "guard": {
     "initial_sl_pips": 20.0,
-    "be_trigger_pips": 5.0,
-    "be_buffer_pips": 1.0,
+    "be_trigger_pips": 50.0,
+    "be_buffer_pips": 0.0,
     "use_trailing": false,
     "trail_start_pips": 10.0,
     "trail_dist_pips": 8.0,
     "trail_step_pips": 1.0,
-    "min_stop_distance_pips": 0.5,
+    "min_stop_distance_pips": 5.0,
     "poll_interval_ms": 500,
     "dry_run": true,
     "symbol_filter": null,
     "pip_overrides": { "XAU/USD": 0.1 },
     "verbose": false,
     "account_id": ""
+  },
+  "daemon": {
+    "watch_symbols": ["XAU/USD", "USD/JPY", "EUR/USD"],
+    "port": 8911,
+    "data_dir": "data",
+    "guard_enabled": true
   }
 }

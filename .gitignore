@@ -2,6 +2,7 @@
 config.json
 config.demo.json
 *.secret.json
+data/
 .venv/
 __pycache__/
 *.py[cod]
