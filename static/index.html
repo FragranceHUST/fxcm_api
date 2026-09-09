@@ -10,13 +10,22 @@
     --text: #d1d4dc; --muted: #787b86;
     --up: #26a69a; --down: #ef5350; --accent: #2962ff;
   }
+  body.demo-env { --accent: #2962ff; }
+  body.real-env { --accent: #ff5252; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+  header { display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
   .brand { font-weight: 600; font-size: 15px; }
-  .status { color: var(--muted); font-size: 12px; }
+  .env-switch { display: flex; gap: 6px; }
+  .env-btn { padding: 5px 16px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; color: var(--muted); font-weight: 600; user-select: none; }
+  .env-btn.active-demo { background: #2962ff; color: #fff; border-color: #2962ff; }
+  .env-btn.active-real { background: #ff5252; color: #fff; border-color: #ff5252; }
+  .status { color: var(--muted); font-size: 12px; margin-left: auto; }
   .status.ok { color: var(--up); }
   .status.bad { color: var(--down); }
+  #env-banner { padding: 6px 16px; font-size: 13px; font-weight: 600; display: none; }
+  body.demo-env #env-banner { display: block; background: rgba(41, 98, 255, 0.15); color: #7aa2ff; }
+  body.real-env #env-banner { display: block; background: rgba(255, 82, 82, 0.18); color: #ff8a8a; }
   nav { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
   .tabs { display: flex; gap: 4px; }
   .tab { padding: 5px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); user-select: none; }
@@ -26,21 +35,44 @@
   .quote .bid, .quote .ask { font-size: 18px; font-weight: 600; }
   .quote .label { color: var(--muted); font-size: 12px; margin-right: 4px; }
   .quote .spread { color: var(--muted); font-size: 12px; }
-  #chart { height: calc(100vh - 118px); }
+  #chart { height: calc(100vh - 320px); min-height: 320px; }
+  #panel { border-top: 1px solid var(--border); padding: 10px 16px; }
+  .acct-row { display: flex; gap: 24px; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+  .acct-row .label { color: var(--muted); font-size: 12px; margin-right: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 4px 10px; text-align: right; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  th:first-child, td:first-child { text-align: left; }
+  .pos-buy { color: var(--up); } .pos-sell { color: var(--down); }
   footer { padding: 6px 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 </style>
 </head>
-<body>
+<body class="demo-env">
 <header>
-  <div class="brand">FXCM 盯盘 <span style="color:var(--muted);font-size:12px">（只读）</span></div>
+  <div class="brand">FXCM 盯盘</div>
+  <div class="env-switch">
+    <div id="btn-demo" class="env-btn active-demo" onclick="switchEnv('demo')">模拟 DEMO</div>
+    <div id="btn-real" class="env-btn" onclick="switchEnv('real')">真实 REAL</div>
+  </div>
   <div id="status" class="status">连接中…</div>
 </header>
+<div id="env-banner">🧪 模拟环境（demo 账户）</div>
 <nav>
   <div id="symbol-tabs" class="tabs"></div>
   <div id="tf-tabs" class="tabs"></div>
   <div id="quote" class="quote"></div>
 </nav>
 <div id="chart"></div>
+<div id="panel">
+  <div class="acct-row" id="acct-row"></div>
+  <table>
+    <thead><tr>
+      <th>trade_id</th><th>品种</th><th>方向</th><th>手数</th>
+      <th>开仓价</th><th>当前止损</th><th>止损单ID</th><th>浮动盈亏</th>
+    </tr></thead>
+    <tbody id="pos-body"><tr><td colspan="8" style="color:var(--muted)">加载中…</td></tr></tbody>
+  </table>
+</div>
 <footer id="csv-note"></footer>
 
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
@@ -50,10 +82,10 @@ const SYMBOLS = ["XAU/USD", "USD/JPY", "EUR/USD"];
 const TFS = { "1m": 60, "15m": 900, "1h": 3600, "4h": 14400 };
 const DIGITS = { "XAU/USD": 2, "USD/JPY": 3, "EUR/USD": 5 };
 const TZ_OFFSET_H = -new Date().getTimezoneOffset() / 60;
-const toChartTime = ts => Math.floor(ts / TFS[activeTf]) * TFS[activeTf] + TZ_OFFSET_H * 3600;
 
 let activeSymbol = SYMBOLS[0];
 let activeTf = "1m";
+let activeEnv = "demo";
 let series = null;
 let lastBar = null;
 let ws = null;
@@ -61,7 +93,7 @@ let ws = null;
 const chart = LightweightCharts.createChart(document.getElementById("chart"), {
   layout: { background: { color: "var(--bg)" }, textColor: "#787b86" },
   grid: { vertLines: { color: "#1c2030" }, horzLines: { color: "#1c2030" } },
-  timeScale: { timeVisible: true, secondsVisible: true, rightOffset: 6 },
+  timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6 },
   priceScale: { borderColor: "#2a2e39" },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
 });
@@ -127,11 +159,63 @@ function connectWs() {
 async function checkHealth() {
   const el = document.getElementById("status");
   try {
-    const r = await fetch("/api/health");
-    const h = await r.json();
-    if (h.status === "CONNECTED") { el.textContent = `已连接 · ${h.symbols.join(" / ")}`; el.className = "status ok"; }
-    else { el.textContent = `会话状态: ${h.status}`; el.className = "status bad"; }
+    const r = await fetch("/api/environments");
+    const envs = await r.json();
+    const mine = envs[activeEnv];
+    if (mine && mine.status === "CONNECTED") {
+      el.textContent = `${activeEnv.toUpperCase()} 已连接`;
+      el.className = "status ok";
+    } else {
+      el.textContent = `${activeEnv.toUpperCase()} ${mine ? mine.status : "N/A"}`;
+      el.className = "status bad";
+    }
   } catch { el.textContent = "服务不可达"; el.className = "status bad"; }
+}
+
+function switchEnv(env) {
+  activeEnv = env;
+  document.body.className = env === "real" ? "real-env" : "demo-env";
+  document.getElementById("btn-demo").className = "env-btn" + (env === "demo" ? " active-demo" : "");
+  document.getElementById("btn-real").className = "env-btn" + (env === "real" ? " active-real" : "");
+  document.getElementById("env-banner").textContent = env === "real"
+    ? "⚠ 真实资金环境（real 账户）— 所有操作影响真实资金"
+    : "🧪 模拟环境（demo 账户）";
+  loadPanel();
+  checkHealth();
+}
+
+async function loadPanel() {
+  const acctRow = document.getElementById("acct-row");
+  const tbody = document.getElementById("pos-body");
+  try {
+    const [envRes, posRes] = await Promise.all([
+      fetch(`/api/environments`), fetch(`/api/${activeEnv}/positions`),
+    ]);
+    const envs = await envRes.json();
+    const positions = await posRes.json();
+    const acct = envs[activeEnv] && envs[activeEnv].account;
+    acctRow.innerHTML = acct
+      ? `<span><span class="label">环境</span>${activeEnv.toUpperCase()}</span>` +
+        `<span><span class="label">账户</span>${acct.account}</span>` +
+        `<span><span class="label">余额</span>${acct.balance.toFixed(2)}</span>` +
+        `<span><span class="label">净值</span>${acct.equity.toFixed(2)}</span>`
+      : `<span style="color:var(--muted)">${activeEnv} 会话未就绪</span>`;
+    if (!positions.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">无持仓</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = positions.map(p => {
+      const d = DIGITS[p.symbol] ?? 5;
+      const plColor = p.gross_pl >= 0 ? "var(--up)" : "var(--down)";
+      return `<tr><td>${p.trade_id}</td><td>${p.symbol}</td>` +
+        `<td class="${p.is_buy ? "pos-buy" : "pos-sell"}">${p.is_buy ? "BUY" : "SELL"}</td>` +
+        `<td>${p.amount}</td><td>${p.open_rate.toFixed(d)}</td>` +
+        `<td>${p.stop ? p.stop.toFixed(d) : "无"}</td><td>${p.stop_order_id || "-"}</td>` +
+        `<td style="color:${plColor}">${p.gross_pl.toFixed(2)}</td></tr>`;
+    }).join("");
+  } catch {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">加载失败</td></tr>`;
+  }
 }
 
 function buildTabs() {
@@ -166,11 +250,13 @@ function buildTabs() {
 (async function init() {
   buildTabs();
   document.getElementById("csv-note").textContent =
-    "数据来源：real 行情（OFFERS 实时 + SQLite 历史回填）· 周期 1m/15m/1h/4h · 本页只读，不含下单功能";
+    "数据来源：real 行情（OFFERS 实时 + SQLite 历史回填）· 周期 1m/15m/1h/4h · 图表两环境共用 real 数据";
   await loadCandles();
   connectWs();
+  loadPanel();
   checkHealth();
   setInterval(checkHealth, 5000);
+  setInterval(loadPanel, 3000);
 })();
 </script>
 </body>
