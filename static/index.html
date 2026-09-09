@@ -329,11 +329,9 @@ async function loadPanel() {
         `<span><span class="label">余额</span>${acct.balance.toFixed(2)}</span>` +
         `<span><span class="label">净值</span>${acct.equity.toFixed(2)}</span>`
       : `<span style="color:var(--muted)">${activeEnv} 会话未就绪</span>`;
-    if (!positions.length) {
-      tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">无持仓</td></tr>`;
-      return;
-    }
-    tbody.innerHTML = positions.map(p => {
+    tbody.innerHTML = !positions.length
+      ? `<tr><td colspan="8" style="color:var(--muted)">无持仓</td></tr>`
+      : positions.map(p => {
       const d = DIGITS[p.symbol] ?? 5;
       const plColor = p.gross_pl >= 0 ? "var(--up)" : "var(--down)";
       return `<tr><td>${p.trade_id}</td><td>${p.symbol}</td>` +
@@ -342,7 +340,7 @@ async function loadPanel() {
         `<td>${p.stop ? p.stop.toFixed(d) : "无"}</td><td>${p.stop_order_id || "-"}</td>` +
         `<td style="color:${plColor}">${p.gross_pl.toFixed(2)}</td>` +
         `<td><button class="rowbtn" onclick="closePos('${p.trade_id}')">平仓</button></td></tr>`;
-    }).join("");
+      }).join("");
     const pendRes = await fetch(`/api/${activeEnv}/orders`);
     const pend = await pendRes.json();
     const rows = [];
