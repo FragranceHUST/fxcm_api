@@ -96,7 +96,8 @@ class SessionWorker:
             row = accounts.get_row(0)
             return {"account": str(row.account_id),
                     "balance": float(row.balance),
-                    "equity": float(getattr(row, "equity", row.balance) or row.balance)}
+                    "equity": float(getattr(row, "equity", row.balance) or row.balance),
+                    "margin_used": float(getattr(row, "margin_used", 0.0) or 0.0)}
         except Exception as exc:
             logger.warning("[%s] 账户摘要读取失败: %s", self.env, exc)
             return None

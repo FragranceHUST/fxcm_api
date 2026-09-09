@@ -28,6 +28,7 @@ from forexconnect import ForexConnect
 from fxcm_api.candles import TF_LABELS
 from fxcm_api.config import DaemonSettings, load_daemon_settings
 from fxcm_api.data.hub import MarketHub
+from fxcm_api.data.stats import compute_stats
 from fxcm_api.data.store import CandleStore
 from fxcm_api.sessions import SessionManager, SessionWorker
 from fxcm_api.stop_manager import StopManager
@@ -206,6 +207,40 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
         return trade_constraints(worker.fx, symbol, acct["equity"],
                                  pip_overrides=worker.guard.pip_overrides)
 
+    @app.get("/api/{env}/history/trades")
+    def history_trades(env: str, limit: int = 200):
+        if env not in ("real", "demo"):
+            raise HTTPException(404, f"未知环境: {env}")
+        return _closed_trades(mgr.worker(env).fx, limit=max(1, min(limit, 2000)))
+
+    @app.get("/api/{env}/history/orders")
+    def history_orders(env: str, limit: int = 200):
+        return store.get_journal(env=env, limit=max(1, min(limit, 2000)))
+
+    @app.get("/api/{env}/history/messages")
+    def history_messages(env: str, limit: int = 50):
+        fx = mgr.worker(env).fx
+        if fx is None:
+            return []
+        msgs = fx.get_table(ForexConnect.MESSAGES)
+        out = []
+        for i, m in enumerate(list(msgs or [])[:max(1, min(limit, 200))]):
+            out.append({"time": str(getattr(m, "time", "")),
+                        "text": str(getattr(m, "text", ""))})
+        return out
+
+    @app.get("/api/{env}/stats")
+    def env_stats(env: str):
+        worker = mgr.worker(env)
+        if worker.fx is None:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        closed = _closed_trades(worker.fx, limit=2000)
+        open_trades = _positions_snapshot(worker.fx)
+        equity_curve = store.get_equity(env)
+        journal = store.get_journal(env=env, limit=1000)
+        return compute_stats(closed_trades=closed, open_trades=open_trades,
+                             equity_curve=equity_curve, journal=journal)
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket, symbol: str | None = None):
         await websocket.accept()
@@ -241,6 +276,38 @@ def _start_guard(worker: SessionWorker) -> None:
                      daemon=True).start()
     logger.info("[%s] guard 循环已启动 (dry_run=%s, 品种=%s)",
                 worker.env, worker.guard.dry_run, worker.guard.symbol_filter or "全品种")
+
+
+def _equity_sampler(mgr: SessionManager, store: CandleStore) -> None:
+    while True:
+        for env in ("real", "demo"):
+            acct = mgr.worker(env).account_summary()
+            if acct:
+                store.add_equity_sample(env, acct["balance"], acct["equity"],
+                                        acct.get("margin_used", 0.0))
+        time.sleep(30)
+
+
+def _closed_trades(fx, limit: int = 500) -> list[dict]:
+    if fx is None:
+        return []
+    offers = {row.offer_id: row.instrument for row in fx.get_table(ForexConnect.OFFERS)}
+    closed = fx.get_table(ForexConnect.CLOSED_TRADES)
+    out = []
+    for row in list(closed or [])[:limit]:
+        out.append({
+            "trade_id": row.trade_id,
+            "symbol": offers.get(row.offer_id, "?"),
+            "is_buy": trade_is_buy(row),
+            "amount": row.amount,
+            "open_rate": row.open_rate,
+            "close_rate": row.close_rate,
+            "gross_pl": row.gross_pl,
+            "open_time": getattr(row, "open_time", None),
+            "close_time": getattr(row, "close_time", None),
+            "commission": float(getattr(row, "commission", 0.0) or 0.0),
+        })
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -280,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
                             pip_overrides=mgr.demo.guard.pip_overrides)
         tm.load_from_journal()
         threading.Thread(target=tm.run_loop, name="triggers", daemon=True).start()
+        threading.Thread(target=_equity_sampler, args=(mgr, store),
+                         name="equity-sampler", daemon=True).start()
 
         app = build_app(hub, mgr, store, daemon_cfg, tm)
         logger.info("Web 服务: http://%s:%d/", args.host, port)

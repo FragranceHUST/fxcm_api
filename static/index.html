@@ -53,6 +53,10 @@
   .hint { color: var(--muted); font-size: 12px; }
   .rowbtn { border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 12px; }
   .rowbtn:hover { border-color: var(--accent); color: var(--accent); }
+  .stats-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0; }
+  .stat-card { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; min-width: 110px; }
+  .stat-card .k { color: var(--muted); font-size: 11px; }
+  .stat-card .v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body class="demo-env">
@@ -105,6 +109,13 @@
   <table>
     <thead><tr><th>ID</th><th>类型</th><th>品种</th><th>方向</th><th>价格</th><th>手数</th><th>说明</th><th>操作</th></tr></thead>
     <tbody id="pend-body"><tr><td colspan="8" style="color:var(--muted)">无</td></tr></tbody>
+  </table>
+  <div style="margin-top:8px" class="hint">交易统计（CostFunction 口径）</div>
+  <div class="stats-row" id="stats-row"></div>
+  <div style="margin-top:8px" class="hint">已平仓交易（最近 20 笔）</div>
+  <table>
+    <thead><tr><th>trade_id</th><th>品种</th><th>方向</th><th>开仓价</th><th>平仓价</th><th>盈亏</th><th>平仓时间</th></tr></thead>
+    <tbody id="closed-body"><tr><td colspan="7" style="color:var(--muted)">加载中…</td></tr></tbody>
   </table>
 </div>
 <footer id="csv-note"></footer>
@@ -350,6 +361,33 @@ async function loadPanel() {
     });
     document.getElementById("pend-body").innerHTML = rows.length
       ? rows.join("") : `<tr><td colspan="8" style="color:var(--muted)">无</td></tr>`;
+    const [statsRes, histRes] = await Promise.all([
+      fetch(`/api/${activeEnv}/stats`), fetch(`/api/${activeEnv}/history/trades?limit=20`),
+    ]);
+    const st = await statsRes.json();
+    const cards = [
+      ["总PnL", st.total_pnl], ["已实现", st.realized_pnl], ["未实现", st.unrealized_pnl],
+      ["胜率", (st.winrate * 100).toFixed(1) + "%"], ["夏普", st.sharpe_ratio],
+      ["最大回撤", st.max_drawdown], ["盈亏比", st.max_profitloss_ratio],
+      ["连盈/连亏", `${st.max_consecutive_profit}/${st.max_consecutive_loss}`],
+      ["交易次数", st.closed_trade_cnt], ["均持仓(分)", st.avg_holding_minutes],
+      ["总滑点", st.total_slippage], ["总佣金", st.total_commission],
+    ];
+    document.getElementById("stats-row").innerHTML = cards.map(([k, v]) =>
+      `<div class="stat-card"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
+    const closed = await histRes.json();
+    document.getElementById("closed-body").innerHTML = closed.length
+      ? closed.map(t => {
+          const d = DIGITS[t.symbol] ?? 5;
+          const plColor = t.gross_pl >= 0 ? "var(--up)" : "var(--down)";
+          const ct = t.close_time && t.close_time.strftime
+            ? t.close_time.strftime("%m-%d %H:%M") : String(t.close_time ?? "");
+          return `<tr><td>${t.trade_id}</td><td>${t.symbol}</td>` +
+            `<td class="${t.is_buy ? "pos-buy" : "pos-sell"}">${t.is_buy ? "BUY" : "SELL"}</td>` +
+            `<td>${t.open_rate.toFixed(d)}</td><td>${t.close_rate.toFixed(d)}</td>` +
+            `<td style="color:${plColor}">${t.gross_pl.toFixed(2)}</td><td>${ct}</td></tr>`;
+        }).join("")
+      : `<tr><td colspan="7" style="color:var(--muted)">暂无已平仓记录</td></tr>`;
   } catch {
     tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">加载失败</td></tr>`;
   }
