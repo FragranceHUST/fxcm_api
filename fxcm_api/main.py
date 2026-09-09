@@ -15,11 +15,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 from forexconnect import ForexConnect, TableListener
+from fxcm_api.data import backfill as backfill_module
+from fxcm_api.data.store import CandleStore
 
 from fxcm_api.config import GuardSettings, load_config
 from fxcm_api.pips import pip_size
@@ -295,6 +300,49 @@ def cmd_measure(args: argparse.Namespace) -> int:
         disconnect(fx)
 
 
+def cmd_probe_history(args: argparse.Namespace) -> int:
+    """实测单品种单周期的容量与深度，输出 JSON。"""
+    cred, _ = load_config(args.config)
+    fx = None
+    try:
+        fx = connect(cred)
+        result = backfill_module.probe(fx, args.symbol, args.tf)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    finally:
+        disconnect(fx)
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    """历史K线批量回填（支持 Ctrl+C 中断后续传）。"""
+    cred, _ = load_config(args.config)
+    tf_labels = [t.strip() for t in args.tf.split(",") if t.strip()]
+    for t in tf_labels:
+        if t not in backfill_module.TF_SECONDS:
+            print(f"未知周期: {t}（可选 {'/'.join(backfill_module.TF_SECONDS)}）")
+            return 2
+    store = CandleStore(Path(args.data_dir) / "candles.db")
+    fx = None
+    try:
+        fx = connect(cred, retries=4)
+        def progress(symbol, tf, total, requests, cursor_ts):
+            dt = datetime.fromtimestamp(cursor_ts, tz=timezone.utc)
+            print(f"[{symbol} {tf}] 已存 {total} 根 / {requests} 请求，"
+                  f"回填至 {dt:%Y-%m-%d}", flush=True)
+        for symbol in args.symbols:
+            for tf in tf_labels:
+                r = backfill_module.backfill(fx, symbol, tf, args.years, store,
+                                             delay_ms=args.delay_ms, progress=progress)
+                print(f"== {symbol} {tf} 完成: {r['bars']} 根 / {r['requests']} 请求")
+        return 0
+    except KeyboardInterrupt:
+        print("中断：游标已保存，重跑同一命令即续传")
+        return 130
+    finally:
+        disconnect(fx)
+        store.close()
+
+
 def guard_summary(guard: GuardSettings) -> str:
     return (f"初始SL={guard.initial_sl_pips}pips 保本触发={guard.be_trigger_pips}pips "
             f"缓冲={guard.be_buffer_pips}pips 移动止损={guard.use_trailing} "
@@ -339,6 +387,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_measure.add_argument("--seconds", type=float, default=60.0)
     p_measure.add_argument("--bucket", type=float, default=10.0, help="分桶时长（秒）")
 
+    p_probe = sub.add_parser("probe-history", help="实测历史数据容量与可回溯深度")
+    p_probe.add_argument("--symbol", default="XAU/USD")
+    p_probe.add_argument("--tf", default="m1", choices=["1m", "15m", "1h", "4h", "1d"])
+
+    p_backfill = sub.add_parser("backfill", help="历史K线回填到 SQLite（断点续传）")
+    p_backfill.add_argument("--symbols", nargs="+",
+                            default=["XAU/USD", "USD/JPY", "EUR/USD"])
+    p_backfill.add_argument("--tf", default="1m,15m,1h,4h,1d",
+                            help="逗号分隔周期：1m,15m,1h,4h,1d")
+    p_backfill.add_argument("--years", type=float, default=10.0)
+    p_backfill.add_argument("--delay-ms", type=int, default=300)
+    p_backfill.add_argument("--data-dir", default="data")
+
     return parser
 
 
@@ -353,6 +414,8 @@ COMMANDS = {
     "close": cmd_close,
     "sl": cmd_sl,
     "measure": cmd_measure,
+    "probe-history": cmd_probe_history,
+    "backfill": cmd_backfill,
 }
 
 

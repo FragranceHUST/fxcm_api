@@ -13,10 +13,10 @@ import threading
 from collections import deque
 from dataclasses import asdict, dataclass
 
-# 默认周期（秒）：1s / 1m / 15m / 1h
-GRANULARITIES: tuple[int, ...] = (1, 60, 900, 3600)
-# 粒度标签 ↔ 秒数（API 参数映射用）
-TF_LABELS: dict[str, int] = {"1s": 1, "1m": 60, "15m": 900, "1h": 3600}
+# 默认周期（秒）：1s / 1m / 15m / 1h / 4h
+GRANULARITIES: tuple[int, ...] = (1, 60, 900, 3600, 14400)
+# 粒度标签 ↔ 秒数（API 参数映射用；1d 仅由回填落库，不做内存聚合）
+TF_LABELS: dict[str, int] = {"1s": 1, "1m": 60, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 # 每周期内存保留的K线数量上限（1s×2000 ≈ 33 分钟历史，重启后靠 CSV 加载补齐）
 MAX_CANDLES = 2000
 

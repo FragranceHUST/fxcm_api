@@ -47,13 +47,13 @@
 <script>
 "use strict";
 const SYMBOLS = ["XAU/USD", "USD/JPY", "EUR/USD"];
-const TFS = { "1s": 1, "1m": 60, "15m": 900, "1h": 3600 };
+const TFS = { "1m": 60, "15m": 900, "1h": 3600, "4h": 14400 };
 const DIGITS = { "XAU/USD": 2, "USD/JPY": 3, "EUR/USD": 5 };
 const TZ_OFFSET_H = -new Date().getTimezoneOffset() / 60;
 const toChartTime = ts => Math.floor(ts / TFS[activeTf]) * TFS[activeTf] + TZ_OFFSET_H * 3600;
 
 let activeSymbol = SYMBOLS[0];
-let activeTf = "1s";
+let activeTf = "1m";
 let series = null;
 let lastBar = null;
 let ws = null;
@@ -156,7 +156,6 @@ function buildTabs() {
     t.onclick = () => {
       if (activeTf === tf) return;
       activeTf = tf;
-      chart.timeScale().applyOptions({ secondsVisible: TFS[tf] === 1 });
       tfBox.querySelectorAll(".tab").forEach(e => e.classList.toggle("active", e.textContent === tf));
       loadCandles();
     };
@@ -167,7 +166,7 @@ function buildTabs() {
 (async function init() {
   buildTabs();
   document.getElementById("csv-note").textContent =
-    "数据来源：本机 fxcm_daemon（OFFERS 实时行情）· 1s K线落盘 data/<品种>_1s.csv · 本页只读，不含下单功能";
+    "数据来源：real 行情（OFFERS 实时 + SQLite 历史回填）· 周期 1m/15m/1h/4h · 本页只读，不含下单功能";
   await loadCandles();
   connectWs();
   checkHealth();
