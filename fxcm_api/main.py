@@ -44,6 +44,112 @@ from fxcm_api.trading import (
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+DAEMON_URL = "http://127.0.0.1:8911"
+
+
+def daemon_alive() -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{DAEMON_URL}/api/health", timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def daemon_request(path: str, method: str = "GET", body: dict | None = None):
+    import urllib.request
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{DAEMON_URL}{path}", data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read().decode() or "{}")
+
+
+def confirm_real(env: str, action: str) -> bool:
+    if env != "real":
+        return True
+    return input(f"⚠⚠ 真实资金{action}，输入 yes 确认: ").strip().lower() == "yes"
+
+
+def proxy_positions(args: argparse.Namespace) -> int:
+    rc, rows = daemon_request(f"/api/{args.env}/positions")
+    if rc != 200:
+        print(f"代理失败 [{rc}]"); return 1
+    print(f"持仓数: {len(rows)} [{args.env}, 经 daemon 会话，未登录]")
+    for r in rows:
+        d = 2 if r["symbol"] == "XAU/USD" else 5
+        stop = f"{r['stop']:.{d}f}" if r["stop"] else "无"
+        sid = r["stop_order_id"] or "-"
+        print(f"{r['trade_id']:<10} {r['symbol']:<9} "
+              f"{'BUY' if r['is_buy'] else 'SELL':<5} {r['amount']:>6} "
+              f"{r['open_rate']:>10.{d}f} {stop:>10} "
+              f"{sid:<10} {r['gross_pl']:>9.2f}")
+    return 0
+
+
+def proxy_order(args: argparse.Namespace) -> int:
+    if not confirm_real(args.env, "开仓"):
+        print("已取消"); return 1
+    body = {"order_type": "market", "symbol": args.symbol,
+            "is_buy": args.buy, "amount": args.amount}
+    if args.env == "real":
+        body["confirm"] = True
+    rc, r = daemon_request(f"/api/{args.env}/orders", "POST", body)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+    return 0 if rc == 200 else 1
+
+
+def proxy_close(args: argparse.Namespace) -> int:
+    if not confirm_real(args.env, "平仓"):
+        print("已取消"); return 1
+    body = {"confirm": True} if args.env == "real" else {}
+    if args.amount:
+        body["amount"] = args.amount
+    rc, r = daemon_request(f"/api/{args.env}/positions/{args.trade_id}/close", "POST", body)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+    return 0 if rc == 200 else 1
+
+
+def proxy_sl(args: argparse.Namespace) -> int:
+    if args.price is None:
+        if args.pips is None:
+            print("需要 --price 或 --pips"); return 2
+        rc0, rows = daemon_request(f"/api/{args.env}/positions")
+        trade = next((t for t in rows if str(t["trade_id"]) == str(args.trade_id)), None)
+        if not trade:
+            print("持仓不存在"); return 1
+        pip = 0.1 if trade["symbol"] == "XAU/USD" else \
+            (0.01 if trade["symbol"] == "USD/JPY" else 0.0001)
+        args.price = trade["open_rate"] - args.pips * pip if trade["is_buy"] \
+            else trade["open_rate"] + args.pips * pip
+        print(f"换算止损价: {args.price}")
+    if not confirm_real(args.env, "改损"):
+        print("已取消"); return 1
+    body = {"price": args.price}
+    if args.env == "real":
+        body["confirm"] = True
+    rc, r = daemon_request(f"/api/{args.env}/positions/{args.trade_id}/sl", "PATCH", body)
+    print(json.dumps(r, ensure_ascii=False, indent=2))
+    return 0 if rc == 200 else 1
+
+
+def proxy_history(args: argparse.Namespace) -> int:
+    rc, rows = daemon_request(f"/api/{args.env}/history/trades?limit={args.limit}")
+    if rc != 200:
+        print(f"代理失败 [{rc}]"); return 1
+    print(f"已平仓 {len(rows)} 笔 [{args.env}]")
+    for t in rows:
+        d = 2 if t["symbol"] == "XAU/USD" else 5
+        ct = str(t["close_time"])[:19]
+        print(f"{t['trade_id']:<10} {t['symbol']:<9} "
+              f"{'BUY' if t['is_buy'] else 'SELL':<5} {t['amount']:>6} "
+              f"{t['open_rate']:>10.{d}f} {t['close_rate']:>10.{d}f} "
+              f"{t['gross_pl']:>9.2f} {ct}")
+    return 0
+
 
 def cmd_check(_args: argparse.Namespace) -> int:
     import forexconnect
@@ -127,6 +233,9 @@ def cmd_stream(args: argparse.Namespace) -> int:
 
 
 def cmd_guard(args: argparse.Namespace) -> int:
+    if daemon_alive():
+        print("guard 由 daemon 承担（双环境循环运行中），CLI guard 已停用以避免两个管家抢活")
+        return 0
     cred, guard = load_config(args.config)
     fx = None
     try:
@@ -142,6 +251,8 @@ def cmd_guard(args: argparse.Namespace) -> int:
 
 
 def cmd_positions(args: argparse.Namespace) -> int:
+    if daemon_alive():
+        return proxy_positions(args)
     cred, guard = load_config(args.config)
     fx = None
     try:
@@ -169,6 +280,8 @@ def cmd_positions(args: argparse.Namespace) -> int:
 
 
 def cmd_open(args: argparse.Namespace) -> int:
+    if daemon_alive():
+        return proxy_order(args)
     cred, guard = load_config(args.config)
     fx = None
     try:
@@ -216,6 +329,8 @@ def cmd_close(args: argparse.Namespace) -> int:
 
 
 def cmd_sl(args: argparse.Namespace) -> int:
+    if daemon_alive():
+        return proxy_sl(args)
     cred, guard = load_config(args.config)
     fx = None
     try:
@@ -343,6 +458,27 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         store.close()
 
 
+def cmd_history(args: argparse.Namespace) -> int:
+    if daemon_alive():
+        return proxy_history(args)
+    cred, _ = load_config(args.config)
+    fx = None
+    try:
+        fx = connect(cred)
+        print(f"已平仓交易 [{args.config}]")
+        offers = {r.offer_id: r.instrument for r in fx.get_table(ForexConnect.OFFERS)}
+        closed = fx.get_table(ForexConnect.CLOSED_TRADES)
+        rows = list(closed or [])[:args.limit]
+        for t in rows:
+            d = 2 if offers.get(t.offer_id) == "XAU/USD" else 5
+            print(f"{t.trade_id:<10} {offers.get(t.offer_id, '?'):<9} "
+                  f"{t.amount:>6} {t.open_rate:>10.{d}f} {t.close_rate:>10.{d}f} "
+                  f"{t.gross_pl:>9.2f} {t.close_time}")
+        return 0
+    finally:
+        disconnect(fx)
+
+
 def guard_summary(guard: GuardSettings) -> str:
     return (f"初始SL={guard.initial_sl_pips}pips 保本触发={guard.be_trigger_pips}pips "
             f"缓冲={guard.be_buffer_pips}pips 移动止损={guard.use_trailing} "
@@ -364,19 +500,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_stream.add_argument("--seconds", type=float, default=10.0)
     p_stream.add_argument("--lines", type=int, default=5)
 
-    sub.add_parser("guard", help="运行动态止损管家（Ctrl+C 退出）")
-    sub.add_parser("positions", help="打印当前持仓快照（guard 视角字段）")
+    p_pos = sub.add_parser("positions", help="打印当前持仓快照（guard 视角字段）")
+    p_pos.add_argument("--env", default="demo", choices=["demo", "real"])
 
-    p_open = sub.add_parser("open", help="市价开一笔测试仓位")
+    p_hist = sub.add_parser("history", help="已平仓交易历史（daemon 在线零登录）")
+    p_hist.add_argument("--env", default="demo", choices=["demo", "real"])
+    p_hist.add_argument("--limit", type=int, default=50)
+
+    sub.add_parser("guard", help="运行动态止损管家（Ctrl+C 退出）")
+    p_open = sub.add_parser("open", help="市价开一笔测试仓位（daemon 在线时走代理）")
+    p_open.add_argument("--env", default="demo", choices=["demo", "real"])
     p_open.add_argument("--symbol", required=True, help="品种，如 EUR/USD")
     p_open.add_argument("--buy", action="store_true", help="买入（默认卖出）")
     p_open.add_argument("--amount", type=int, required=True, help="手数（base unit 的倍数，通常 1000 起）")
 
-    p_close = sub.add_parser("close", help="平仓指定持仓")
+    p_close = sub.add_parser("close", help="平仓指定持仓（daemon 在线时走代理）")
+    p_close.add_argument("--env", default="demo", choices=["demo", "real"])
     p_close.add_argument("--trade-id", required=True)
     p_close.add_argument("--amount", type=int, default=None, help="部分平仓手数（默认全平）")
 
-    p_sl = sub.add_parser("sl", help="手动设置某持仓的止损（验证 EDIT_ORDER/CREATE_ORDER）")
+    p_sl = sub.add_parser("sl", help="手动设置某持仓的止损（daemon 在线时走代理）")
+    p_sl.add_argument("--env", default="demo", choices=["demo", "real"])
     p_sl.add_argument("--trade-id", required=True)
     p_sl.add_argument("--pips", type=float, default=None, help="相对开仓价的止损距离（多单向下/空单向上）")
     p_sl.add_argument("--price", type=float, default=None, help="绝对止损价（与 --pips 二选一）")
@@ -414,6 +558,7 @@ COMMANDS = {
     "close": cmd_close,
     "sl": cmd_sl,
     "measure": cmd_measure,
+    "history": cmd_history,
     "probe-history": cmd_probe_history,
     "backfill": cmd_backfill,
 }
