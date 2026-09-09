@@ -216,6 +216,101 @@ class TestDryRun(unittest.TestCase):
         self.assertEqual(len(cm2.records), 1)
 
 
+class TestDuplicateOrderGuard(unittest.TestCase):
+    """ORA-20114 重复单拒绝 = 良性事件；发单后在途窗口内不重复请求。"""
+
+    DUP_MSG = ("Description=19915;DAS 19915: ZDas Exception\n "
+               "ORA-20114: Unable to process order 544851263. "
+               "Cannot place more than one order of this type within order group.")
+
+    class FakeTable(list):
+        @property
+        def size(self):
+            return len(self)
+
+        def get_row(self, i):
+            return self[i]
+
+    class FakeFx:
+        def __init__(self, send_exc=None):
+            self.send_exc = send_exc
+            self.send_count = 0
+            accounts = TestDuplicateOrderGuard.FakeTable()
+            acc = type("AccRow", (), {"account_id": "ACC1"})()
+            accounts.append(acc)
+            offer = type("OfferRow", (), {
+                "offer_id": "O1", "instrument": "EUR/USD",
+                "bid": 1.10000, "ask": 1.10002,
+                "point_size": 0.00001, "digits": 5,
+            })()
+            offers = TestDuplicateOrderGuard.FakeTable([offer])
+            trade = type("TradeRow", (), {
+                "trade_id": "T1", "offer_id": "O1", "amount": 1000,
+                "open_rate": 1.10000, "stop_order_id": "", "stop": 0.0,
+                "buy_sell": "B",
+            })()
+            trades = TestDuplicateOrderGuard.FakeTable([trade])
+            self._tables = {
+                "accounts": accounts, "offers": offers, "trades": trades,
+            }
+
+        def get_table(self, name):
+            key = name.name.lower() if hasattr(name, "name") else str(name).lower()
+            return self._tables[key]
+
+        def create_order_request(self, **kwargs):
+            return "REQUEST"
+
+        def send_request(self, request):
+            self.send_count += 1
+            if self.send_exc is not None:
+                raise self.send_exc
+            return True
+
+    def _manager(self, send_exc=None):
+        from fxcm_api.config import GuardSettings
+        from fxcm_api.stop_manager import StopManager
+
+        fake = self.FakeFx(send_exc=send_exc)
+        mgr = StopManager(fake, GuardSettings(dry_run=False))
+        return mgr, fake
+
+    def test_duplicate_error_is_benign_and_pends(self):
+        mgr, fake = self._manager(send_exc=RuntimeError(self.DUP_MSG))
+        with self.assertLogs("fxcm_api.stop_manager", level="INFO") as cm:
+            self.assertEqual(mgr.run_cycle(), 0)
+        self.assertFalse(any(r.levelname == "ERROR" for r in cm.records))
+        self.assertEqual(fake.send_count, 1)
+        with self.assertNoLogs("fxcm_api.stop_manager", level="INFO"):
+            mgr.run_cycle()   # 在途窗口内：不再发请求
+        self.assertEqual(fake.send_count, 1)
+
+    def test_success_sets_pending_window(self):
+        mgr, fake = self._manager()
+        self.assertEqual(mgr.run_cycle(), 1)
+        self.assertEqual(fake.send_count, 1)
+        self.assertEqual(mgr.run_cycle(), 0)   # 表格未刷新也不重复下单
+        self.assertEqual(fake.send_count, 1)
+
+    def test_other_errors_keep_retrying(self):
+        mgr, fake = self._manager(send_exc=RuntimeError("boom"))
+        with self.assertLogs("fxcm_api.stop_manager", level="ERROR"):
+            mgr.run_cycle()
+        mgr.run_cycle()   # 非 DUPLICATE 错误保留原重试语义
+        self.assertEqual(fake.send_count, 2)
+
+    def test_classifier_matches_variants(self):
+        from fxcm_api.stop_manager import _is_duplicate_stop_error
+
+        self.assertTrue(_is_duplicate_stop_error(RuntimeError(self.DUP_MSG)))
+        self.assertTrue(_is_duplicate_stop_error(RuntimeError("ORA-20114: dup")))
+        self.assertTrue(
+            _is_duplicate_stop_error(RuntimeError("Cannot place more than one "
+                                                  "order of this type")))
+        self.assertFalse(_is_duplicate_stop_error(RuntimeError("Wait timeout")))
+        self.assertFalse(_is_duplicate_stop_error(RuntimeError("boom")))
+
+
 class TestTradeIsBuy(unittest.TestCase):
     """TRADES 行方向字段是 buy_sell('B'/'S')，没有 is_buy——线上踩过的坑。"""
 

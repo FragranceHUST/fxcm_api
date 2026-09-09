@@ -4,6 +4,7 @@
   - 表格由 table manager 自动刷新，这里只负责按周期评估
   - 已有止损的持仓不会被覆盖初始值，但保本/移动逻辑仍可改善它
   - 发单失败不中断循环，下一轮自然重试（自愈）
+  - 发单成功后 5 秒在途窗口：表格刷新有延迟，防止下一周期对同一持仓重复下单
 """
 
 from __future__ import annotations
@@ -20,6 +21,13 @@ from fxcm_api.trading import trade_is_buy
 
 logger = logging.getLogger("fxcm_api.stop_manager")
 
+PENDING_WINDOW_S = 5.0
+
+
+def _is_duplicate_stop_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "ORA-20114" in text or "more than one order of this type" in text
+
 
 class StopManager:
     def __init__(self, fx: ForexConnect, settings: GuardSettings):
@@ -28,6 +36,7 @@ class StopManager:
         self.account_id: str = settings.account_id
         self._account_resolved = False
         self._last_dry_run: dict[str, tuple[str, float]] = {}
+        self._pending: dict[str, float] = {}   # trade_id -> 在途窗口截止时间（monotonic）
 
     def _resolve_account(self) -> None:
         if self._account_resolved:
@@ -130,6 +139,8 @@ class StopManager:
 
         acted = 0
         for trade, offer, pip in self._snapshots():
+            if self._pending.get(trade.trade_id, 0.0) > time.monotonic():
+                continue   # 在途窗口内，等表格刷新反映上一次发单的结果
             try:
                 candidate = evaluate_trade(
                     trade, offer, pip,
@@ -150,9 +161,16 @@ class StopManager:
             try:
                 self._apply(trade, candidate.new_sl, candidate.reason)
                 acted += 1
-            except Exception:
-                logger.exception("下单 #%s (%s) 失败，下一周期重试",
-                                 trade.trade_id, candidate.reason)
+                self._pending[trade.trade_id] = time.monotonic() + PENDING_WINDOW_S
+            except Exception as exc:
+                if _is_duplicate_stop_error(exc):
+                    # 服务器已存在同类型止损单（表格刷新延迟所致），请求等效于已生效
+                    logger.info("#%s (%s) 服务器已存在止损单，本周期跳过: %.60s",
+                                trade.trade_id, candidate.reason, exc)
+                    self._pending[trade.trade_id] = time.monotonic() + PENDING_WINDOW_S
+                else:
+                    logger.exception("下单 #%s (%s) 失败，下一周期重试",
+                                     trade.trade_id, candidate.reason)
         return acted
 
     def run_forever(self) -> None:
