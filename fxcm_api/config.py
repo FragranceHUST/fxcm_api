@@ -63,8 +63,9 @@ def load_config(path: str | None = None) -> tuple[Credentials, GuardSettings]:
 class DaemonSettings:
     watch_symbols: list[str] = field(default_factory=lambda: ["XAU/USD", "USD/JPY", "EUR/USD"])
     port: int = 8911                  # Web 服务监听端口（绑定 127.0.0.1）
-    data_dir: str = "data"            # 本地 CSV 存储目录（每品种一个 1s K线文件）
+    data_dir: str = "data"            # 本地存储目录（candles.db）
     guard_enabled: bool = True        # daemon 内置 guard 循环开关
+    allow_trading: bool = True        # 本环境是否允许下单（real 建议保持默认并依赖二次确认）
 
 
 def load_daemon_settings(path: str | None = None) -> DaemonSettings:

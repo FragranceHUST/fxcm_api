@@ -31,6 +31,16 @@ from fxcm_api.data.hub import MarketHub
 from fxcm_api.data.store import CandleStore
 from fxcm_api.sessions import SessionManager, SessionWorker
 from fxcm_api.stop_manager import StopManager
+from fxcm_api.trade_service import (
+    TriggerManager,
+    cancel_order,
+    close_position,
+    entry_order,
+    market_open,
+    modify_stop,
+    trade_constraints,
+    working_orders,
+)
 from fxcm_api.trading import trade_is_buy
 
 logger = logging.getLogger("fxcm_api.daemon")
@@ -58,7 +68,7 @@ def _positions_snapshot(fx) -> list[dict]:
 
 
 def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
-              daemon_cfg: DaemonSettings) -> FastAPI:
+              daemon_cfg: DaemonSettings, tm: TriggerManager) -> FastAPI:
     app = FastAPI(title="FXCM Watch Daemon", docs_url=None, redoc_url=None)
 
     @app.get("/api/health")
@@ -105,6 +115,96 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
     @app.get("/api/positions")
     def positions_legacy():
         return _positions_snapshot(mgr.worker("demo").fx)
+
+    @app.post("/api/{env}/orders")
+    def place_order(env: str, body: dict):
+        if env not in ("real", "demo"):
+            raise HTTPException(404, f"未知环境: {env}")
+        worker = mgr.worker(env)
+        if worker.fx is None:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        if not worker.daemon_cfg.allow_trading:
+            raise HTTPException(403, f"{env} 环境已禁用交易（allow_trading=false）")
+        if env == "real" and not body.get("confirm"):
+            raise HTTPException(428, "真实环境下单需要 confirm=true（二次确认）")
+        symbol = body.get("symbol", "")
+        is_buy = bool(body.get("is_buy"))
+        try:
+            amount = int(body["amount"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "amount 缺失或非法")
+        order_type = body.get("order_type", "market")
+        pip_overrides = worker.guard.pip_overrides
+        try:
+            if order_type == "market":
+                return market_open(worker.fx, env, symbol, is_buy, amount,
+                                   range_pips=body.get("range_pips"),
+                                   sl_pips=body.get("sl_pips"),
+                                   tp_pips=body.get("tp_pips"),
+                                   pip_overrides=pip_overrides, store=store)
+            if order_type in ("limit", "stop"):
+                return entry_order(worker.fx, env, symbol, is_buy,
+                                   float(body["rate"]), amount,
+                                   band_pips=float(body.get("band_pips", 10.0)),
+                                   gtd_hours=float(body.get("gtd_hours", 24.0)),
+                                   pip_overrides=pip_overrides, store=store,
+                                   trigger_manager=tm)
+            raise HTTPException(400, "order_type 须为 market/limit/stop")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[%s] 下单失败", env)
+            raise HTTPException(500, str(exc)[:200])
+
+    @app.get("/api/{env}/orders")
+    def list_orders(env: str):
+        if env not in ("real", "demo"):
+            raise HTTPException(404, f"未知环境: {env}")
+        worker = mgr.worker(env)
+        return {"orders": working_orders(worker.fx) if worker.fx else [],
+                "triggers": [t for t in tm.active() if t["env"] == env]}
+
+    @app.delete("/api/{env}/orders/{order_id}")
+    def remove_order(env: str, order_id: str):
+        worker = mgr.worker(env)
+        if worker.fx is None:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        return cancel_order(worker.fx, env, order_id, store=store)
+
+    @app.delete("/api/{env}/triggers/{trigger_id}")
+    def remove_trigger(env: str, trigger_id: str):
+        return {"ok": tm.cancel(trigger_id)}
+
+    @app.post("/api/{env}/positions/{trade_id}/close")
+    def close_pos(env: str, trade_id: str, body: dict | None = None):
+        worker = mgr.worker(env)
+        if worker.fx is None:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        if env == "real" and not (body or {}).get("confirm"):
+            raise HTTPException(428, "真实环境平仓需要 confirm=true（二次确认）")
+        return close_position(worker.fx, env, trade_id,
+                              amount=(body or {}).get("amount"), store=store)
+
+    @app.patch("/api/{env}/positions/{trade_id}/sl")
+    def patch_sl(env: str, trade_id: str, body: dict):
+        worker = mgr.worker(env)
+        if worker.fx is None:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        if env == "real" and not body.get("confirm"):
+            raise HTTPException(428, "真实环境改损需要 confirm=true（二次确认）")
+        if body.get("price") is None:
+            raise HTTPException(400, "需要 price（绝对止损价）")
+        return modify_stop(worker.fx, env, trade_id, float(body["price"]),
+                           pip_overrides=worker.guard.pip_overrides, store=store)
+
+    @app.get("/api/{env}/trade-constraints")
+    def constraints(env: str, symbol: str = "XAU/USD"):
+        worker = mgr.worker(env)
+        acct = worker.account_summary()
+        if worker.fx is None or not acct:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        return trade_constraints(worker.fx, symbol, acct["equity"],
+                                 pip_overrides=worker.guard.pip_overrides)
 
     @app.websocket("/ws")
     async def ws(websocket: WebSocket, symbol: str | None = None):
@@ -169,17 +269,25 @@ def main(argv: list[str] | None = None) -> int:
 
     hub = None
     store = None
+    tm = None
     try:
         store = CandleStore(Path(daemon_cfg.data_dir) / "candles.db")
         hub = MarketHub(mgr.real.fx, daemon_cfg.watch_symbols, store)
         _start_guard(mgr.demo)
         _start_guard(mgr.real)
 
-        app = build_app(hub, mgr, store, daemon_cfg)
+        tm = TriggerManager(mgr, hub, store,
+                            pip_overrides=mgr.demo.guard.pip_overrides)
+        tm.load_from_journal()
+        threading.Thread(target=tm.run_loop, name="triggers", daemon=True).start()
+
+        app = build_app(hub, mgr, store, daemon_cfg, tm)
         logger.info("Web 服务: http://%s:%d/", args.host, port)
         uvicorn.run(app, host=args.host, port=port, log_level="warning")
         return 0
     finally:
+        if tm is not None:
+            tm.stop()
         if hub is not None:
             hub.close()
         if store is not None:

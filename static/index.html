@@ -45,6 +45,14 @@
   th:first-child, td:first-child { text-align: left; }
   .pos-buy { color: var(--up); } .pos-sell { color: var(--down); }
   footer { padding: 6px 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .ticket { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; }
+  .t-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+  .t-row .label { color: var(--muted); font-size: 12px; }
+  .t-row input, .t-row select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; width: 90px; }
+  .t-row button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 18px; cursor: pointer; font-weight: 600; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .rowbtn { border: 1px solid var(--border); background: transparent; color: var(--text); border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 12px; }
+  .rowbtn:hover { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body class="demo-env">
@@ -65,12 +73,38 @@
 <div id="chart"></div>
 <div id="panel">
   <div class="acct-row" id="acct-row"></div>
+  <div class="ticket">
+    <div class="t-row">
+      <span class="label">品种</span><b id="t-symbol">XAU/USD</b>
+      <span class="label">类型</span>
+      <select id="t-type">
+        <option value="market">市价</option>
+        <option value="limit">限价</option>
+        <option value="stop">止损突破</option>
+      </select>
+      <span class="label">方向</span>
+      <select id="t-side"><option value="buy">买入</option><option value="sell">卖出</option></select>
+    </div>
+    <div class="t-row">
+      <span class="label">手数</span><input id="t-amount" type="number" value="10">
+      <span class="label">触发价</span><input id="t-rate" type="number" disabled placeholder="市价免填">
+      <span class="label">band(pips)</span><input id="t-band" type="number" value="10">
+      <span class="label">SL(pips)</span><input id="t-sl" type="number" placeholder="可选">
+      <button onclick="submitOrder()">下单</button>
+    </div>
+    <div class="t-row"><span class="hint" id="t-hint"></span></div>
+  </div>
   <table>
     <thead><tr>
       <th>trade_id</th><th>品种</th><th>方向</th><th>手数</th>
-      <th>开仓价</th><th>当前止损</th><th>止损单ID</th><th>浮动盈亏</th>
+      <th>开仓价</th><th>当前止损</th><th>止损单ID</th><th>浮动盈亏</th><th>操作</th>
     </tr></thead>
-    <tbody id="pos-body"><tr><td colspan="8" style="color:var(--muted)">加载中…</td></tr></tbody>
+    <tbody id="pos-body"><tr><td colspan="9" style="color:var(--muted)">加载中…</td></tr></tbody>
+  </table>
+  <div style="margin-top:8px" class="hint">挂单 / 触发器</div>
+  <table>
+    <thead><tr><th>ID</th><th>类型</th><th>品种</th><th>方向</th><th>价格</th><th>手数</th><th>说明</th><th>操作</th></tr></thead>
+    <tbody id="pend-body"><tr><td colspan="8" style="color:var(--muted)">无</td></tr></tbody>
   </table>
 </div>
 <footer id="csv-note"></footer>
@@ -122,14 +156,97 @@ async function loadCandles() {
   series.setData(data);
 }
 
+let lastQuote = null;   // {bid, ask} of activeSymbol
+
 function renderQuote(q) {
   if (!q) return;
+  lastQuote = q;
   const digits = DIGITS[activeSymbol] ?? 5;
   const spread = (q.ask - q.bid).toFixed(digits);
   document.getElementById("quote").innerHTML =
     `<span><span class="label">买</span><span class="bid" style="color:var(--down)">${q.bid.toFixed(digits)}</span></span>` +
     `<span><span class="label">卖</span><span class="ask" style="color:var(--up)">${q.ask.toFixed(digits)}</span></span>` +
     `<span class="spread">点差 ${spread}</span>`;
+}
+
+async function submitOrder() {
+  const env = activeEnv;
+  const type = document.getElementById("t-type").value;
+  const isBuy = document.getElementById("t-side").value === "buy";
+  const amount = parseInt(document.getElementById("t-amount").value, 10);
+  const body = { order_type: type, symbol: activeSymbol, is_buy: isBuy, amount };
+  if (type !== "market") {
+    body.rate = parseFloat(document.getElementById("t-rate").value);
+    body.band_pips = parseFloat(document.getElementById("t-band").value) || 10;
+    if (!body.rate) { alert("请填写触发价"); return; }
+  }
+  const sl = parseFloat(document.getElementById("t-sl").value);
+  if (sl) body.sl_pips = sl;
+  if (env === "real") {
+    const msg = `⚠⚠ 真实资金下单确认 ⚠⚠\n${activeSymbol} ${isBuy ? "买入" : "卖出"} ` +
+      `${amount} 手（${type === "market" ? "市价" : type + " @" + body.rate}）\n确认执行？`;
+    if (!confirm(msg)) return;
+    body.confirm = true;
+  }
+  try {
+    const r = await fetch(`/api/${env}/orders`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!r.ok) { alert(`下单失败: ${j.detail || r.status}`); return; }
+    alert(`已提交: ${JSON.stringify(j)}`);
+    loadPanel();
+  } catch (e) { alert("下单异常: " + e); }
+}
+
+async function closePos(tradeId) {
+  if (activeEnv === "real" &&
+      !confirm(`⚠⚠ 真实资金平仓确认 ⚠⚠\n平仓 ${tradeId}\n确认执行？`)) return;
+  const r = await fetch(`/api/${activeEnv}/positions/${tradeId}/close`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(activeEnv === "real" ? { confirm: true } : {}),
+  });
+  const j = await r.json();
+  if (!r.ok) { alert(`平仓失败: ${j.detail || r.status}`); return; }
+  loadPanel();
+}
+
+async function cancelOrder(orderId) {
+  const r = await fetch(`/api/${activeEnv}/orders/${orderId}`, { method: "DELETE" });
+  const j = await r.json();
+  if (!r.ok) { alert(`撤单失败: ${j.detail || r.status}`); return; }
+  loadPanel();
+}
+
+async function cancelTrigger(tid) {
+  const r = await fetch(`/api/${activeEnv}/triggers/${tid}`, { method: "DELETE" });
+  await r.json();
+  loadPanel();
+}
+
+function onTypeChange() {
+  const type = document.getElementById("t-type").value;
+  const rateInput = document.getElementById("t-rate");
+  rateInput.disabled = type === "market";
+  if (type !== "market" && lastQuote && !rateInput.value) {
+    const digits = DIGITS[activeSymbol] ?? 5;
+    rateInput.value = (document.getElementById("t-side").value === "buy"
+      ? lastQuote.ask : lastQuote.bid).toFixed(digits);
+  }
+  rateInput.placeholder = type === "market" ? "市价免填" : "必填";
+}
+
+async function loadConstraints() {
+  document.getElementById("t-symbol").textContent = activeSymbol;
+  try {
+    const r = await fetch(`/api/${activeEnv}/trade-constraints?symbol=${encodeURIComponent(activeSymbol)}`);
+    if (!r.ok) { document.getElementById("t-hint").textContent = ""; return; }
+    const c = await r.json();
+    document.getElementById("t-hint").textContent =
+      `现价 ${c.price} · 最小交易单位 ${c.min_amount} · 名义最小 $${(c.min_amount * c.price).toFixed(0)} · ` +
+      `安全手数 ≤${c.max_safe_amount}（保证金占用 <50%）`;
+  } catch { document.getElementById("t-hint").textContent = ""; }
 }
 
 function onLive(quote) {
@@ -180,6 +297,7 @@ function switchEnv(env) {
   document.getElementById("env-banner").textContent = env === "real"
     ? "⚠ 真实资金环境（real 账户）— 所有操作影响真实资金"
     : "🧪 模拟环境（demo 账户）";
+  loadConstraints();
   loadPanel();
   checkHealth();
 }
@@ -211,8 +329,27 @@ async function loadPanel() {
         `<td class="${p.is_buy ? "pos-buy" : "pos-sell"}">${p.is_buy ? "BUY" : "SELL"}</td>` +
         `<td>${p.amount}</td><td>${p.open_rate.toFixed(d)}</td>` +
         `<td>${p.stop ? p.stop.toFixed(d) : "无"}</td><td>${p.stop_order_id || "-"}</td>` +
-        `<td style="color:${plColor}">${p.gross_pl.toFixed(2)}</td></tr>`;
+        `<td style="color:${plColor}">${p.gross_pl.toFixed(2)}</td>` +
+        `<td><button class="rowbtn" onclick="closePos('${p.trade_id}')">平仓</button></td></tr>`;
     }).join("");
+    const pendRes = await fetch(`/api/${activeEnv}/orders`);
+    const pend = await pendRes.json();
+    const rows = [];
+    (pend.orders || []).forEach(o => {
+      rows.push(`<tr><td>${o.order_id}</td><td>${o.type}</td><td>${activeSymbol}</td>` +
+        `<td class="${o.is_buy ? "pos-buy" : "pos-sell"}">${o.is_buy ? "BUY" : "SELL"}</td>` +
+        `<td>${o.rate}</td><td>${o.amount}</td><td>等待触发</td>` +
+        `<td><button class="rowbtn" onclick="cancelOrder('${o.order_id}')">撤销</button></td></tr>`);
+    });
+    (pend.triggers || []).forEach(t => {
+      rows.push(`<tr><td>${t.trigger_id}</td><td>触发器</td><td>${t.symbol}</td>` +
+        `<td class="${t.is_buy ? "pos-buy" : "pos-sell"}">${t.is_buy ? "BUY" : "SELL"}</td>` +
+        `<td>${t.rate}</td><td>${t.amount}</td>` +
+        `<td>band ${t.band_pips} pips</td>` +
+        `<td><button class="rowbtn" onclick="cancelTrigger('${t.trigger_id}')">撤销</button></td></tr>`);
+    });
+    document.getElementById("pend-body").innerHTML = rows.length
+      ? rows.join("") : `<tr><td colspan="8" style="color:var(--muted)">无</td></tr>`;
   } catch {
     tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">加载失败</td></tr>`;
   }
@@ -227,6 +364,8 @@ function buildTabs() {
     t.onclick = () => {
       if (activeSymbol === s) return;
       activeSymbol = s;
+      document.getElementById("t-rate").value = "";
+      loadConstraints();
       symBox.querySelectorAll(".tab").forEach(e => e.classList.toggle("active", e.textContent === s));
       loadCandles().then(connectWs);
     };
@@ -251,6 +390,9 @@ function buildTabs() {
   buildTabs();
   document.getElementById("csv-note").textContent =
     "数据来源：real 行情（OFFERS 实时 + SQLite 历史回填）· 周期 1m/15m/1h/4h · 图表两环境共用 real 数据";
+  document.getElementById("t-type").onchange = onTypeChange;
+  document.getElementById("t-side").onchange = onTypeChange;
+  loadConstraints();
   await loadCandles();
   connectWs();
   loadPanel();
