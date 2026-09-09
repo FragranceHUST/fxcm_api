@@ -83,7 +83,9 @@ def _fetch_with_retry(fetch, fx, symbol, tf_name, start_ts, end_ts, retries=3):
     for attempt in range(retries):
         try:
             return fetch(fx, symbol, tf_name, start_ts, end_ts)
-        except Exception as exc:                   # 网络/超时 → 退避重试
+        except Exception as exc:
+            if "No data found" in str(exc):
+                return []                        # 服务端明确无数据 → 空窗口（非瞬态）
             last_exc = exc
             time.sleep(1.5 * (attempt + 1))
     raise last_exc if last_exc else RuntimeError("fetch failed")
