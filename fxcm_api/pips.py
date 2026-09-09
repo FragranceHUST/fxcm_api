@@ -1,4 +1,4 @@
-"""pip 引擎：按报价小数位自适应，支持按品种前缀覆盖（对标 MQL4 版 PipSize）。"""
+"""pip 引擎：按报价小数位自适应，支持按品种前缀覆盖。"""
 
 from __future__ import annotations
 

@@ -31,7 +31,7 @@ class GuardSettings:
     trail_dist_pips: float = 8.0
     trail_step_pips: float = 1.0      # 止损至少改善该点数才发修改请求（防抖）
     min_stop_distance_pips: float = 0.5   # 本地安全距离：新止损距市价不得小于该值
-    poll_interval_ms: int = 500       # 轮询周期，对标 MQL4 版定时器
+    poll_interval_ms: int = 500       # 轮询周期
     dry_run: bool = False             # True = 只打印将执行的动作，绝不发修改请求（观察模式）
     symbol_filter: list[str] | None = None   # None = 全品种；如 ["EUR/USD", "USD/JPY"]
     pip_overrides: dict[str, float] = field(default_factory=lambda: {"XAU/USD": 0.1})

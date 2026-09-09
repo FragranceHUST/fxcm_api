@@ -1,6 +1,6 @@
 """OrderGuard-Python：FXCM ForexConnect 版订单止损管家。
 
-策略与 MQL4/Experts/OrderGuard.mq4 (V1) 一致：
+策略级联：
   1. 初始止损：无止损的持仓自动附加固定点数止损
   2. 保本推损：浮盈达到触发点数后，将止损推至开仓价±缓冲
   3. 移动止损：可选（默认关闭），盈利扩大后按固定间距逐步上移
