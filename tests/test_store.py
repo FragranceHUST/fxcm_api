@@ -153,5 +153,78 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(r["earliest"], self.store.earliest_ts("XAU/USD", 60))
 
 
+class TestInsertNewCandles(unittest.TestCase):
+    """INSERT OR IGNORE 语义：只统计真正新增，已存在键不覆盖。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CandleStore(f"{self.tmp.name}/candles.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_counts_only_genuinely_new(self):
+        bar = (1700000000, 1.1, 1.2, 1.0, 1.15, 1.10001, 1.20001, 1.00001, 1.15001, 5)
+        self.assertEqual(self.store.insert_new_full_candles("XAU/USD", 60, [bar]), 1)
+        self.assertEqual(self.store.insert_new_full_candles("XAU/USD", 60, [bar]), 0)
+        self.assertEqual(self.store.insert_new_full_candles(
+            "XAU/USD", 60, [(bar[0] + 60,) + bar[1:]]), 1)
+        rows = self.store.get_candles("XAU/USD", 60, start_ts=1700000000, end_ts=1700000000)
+        self.assertEqual(rows[0].volume, 5)     # IGNORE 不覆盖已存在行
+
+
+class TestStopOnKnown(unittest.TestCase):
+    """启动补洞：撞到整块已知数据即停，不重扫整个回看窗口。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CandleStore(f"{self.tmp.name}/candles.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def _bar(ts):
+        return (ts, 1.0, 1.2, 0.9, 1.1, 1.10001, 1.20001, 0.90001, 1.10002, 1)
+
+    @staticmethod
+    def _minute_fetch(log):
+        def fetch(_fx, _symbol, _tf, start, end):
+            log.append((start, end))
+            first = (start // 60) * 60
+            return [TestStopOnKnown._bar(ts) for ts in range(first, end, 60)]
+        return fetch
+
+    def test_no_downtime_single_request(self):
+        """无停机重启：首个请求整块已知 → 立即停（1 请求 0 新增）。"""
+        import time
+        from fxcm_api.data import backfill as bf
+        shift = (int(time.time()) // 60) * 60 - 4500   # 对齐整分（与真实 K 线网格一致）
+        self.store.upsert_full_candles(
+            "XAU/USD", 60, [self._bar(shift + ts) for ts in range(0, 4500, 60)])
+        log = []
+        r = bf.backfill(None, "XAU/USD", "1m", 4500 / (365 * 86400), self.store,
+                        delay_ms=0, fetch=self._minute_fetch(log), stop_on_known=True)
+        self.assertEqual(r["bars"], 0)
+        self.assertEqual(len(log), 1)
+
+    def test_gap_filled_then_stop(self):
+        """停机缺口：只补缺口区（2700..4380 共 29 根），触到存量即停。"""
+        import time
+        from fxcm_api.data import backfill as bf
+        shift = (int(time.time()) // 60) * 60 - 4500   # 对齐整分（与真实 K 线网格一致）
+        # 存量：0..2640（旧）+ 4440（重启后 live 写入），中间 2700..4380 为停机缺口
+        self.store.upsert_full_candles(
+            "XAU/USD", 60, [self._bar(shift + ts) for ts in range(0, 2641, 60)])
+        self.store.upsert_full_candles("XAU/USD", 60, [self._bar(shift + 4440)])
+        log = []
+        r = bf.backfill(None, "XAU/USD", "1m", 4500 / (365 * 86400), self.store,
+                        delay_ms=0, fetch=self._minute_fetch(log), stop_on_known=True)
+        self.assertEqual(r["bars"], 29)   # 只补 2700..4380 的缺口，存量 0..2640 与 4440 不重写
+        self.assertEqual(len(log), 1)     # 1m 分块 CHUNK=4440s ≥ 测试窗口，一请求即覆盖
+
+
 if __name__ == "__main__":
     unittest.main()

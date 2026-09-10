@@ -62,6 +62,7 @@ def _positions_snapshot(fx) -> list[dict]:
             "is_buy": trade_is_buy(row),
             "amount": row.amount,
             "open_rate": row.open_rate,
+            "open_time": getattr(row, "open_time", None),
             "stop": row.stop,
             "stop_order_id": row.stop_order_id or "",
             "gross_pl": row.gross_pl,
@@ -331,8 +332,10 @@ def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str
     for tf_label in tf_labels:
         for sym in symbols:
             try:
-                r = backfill_module.backfill(fx, sym, tf_label, days / 365.0, store, delay_ms=250)
-                logger.info("启动补洞 %s %s: +%s 根", sym, tf_label, r["bars"])
+                r = backfill_module.backfill(fx, sym, tf_label, days / 365.0, store,
+                                             delay_ms=250, stop_on_known=True)
+                logger.info("启动补洞 %s %s: 新增 %s 根（扫 %s 请求）",
+                            sym, tf_label, r["bars"], r["requests"])
             except Exception as exc:
                 logger.warning("启动补洞 %s %s 失败（超长缺口由回填脚本兜底）: %s", sym, tf_label, exc)
 

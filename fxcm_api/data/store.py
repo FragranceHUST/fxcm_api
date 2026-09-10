@@ -73,6 +73,17 @@ class CandleStore:
             self._conn.commit()
             return len(bars)
 
+    def insert_new_full_candles(self, symbol: str, tf: int, bars: list[FullBar]) -> int:
+        """只插入新行（INSERT OR IGNORE），返回真正新增的行数；已存在的键不覆盖。"""
+        with self._lock:
+            before = self._conn.total_changes
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO candles(symbol,tf,ts,open,high,low,close,"
+                "ask_open,ask_high,ask_low,ask_close,volume) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(symbol, tf, *b) for b in bars])
+            self._conn.commit()
+            return self._conn.total_changes - before
+
     def get_candles(self, symbol: str, tf: int, start_ts: int | None = None,
                     end_ts: int | None = None, limit: int = 5000) -> list[Candle]:
         """标准化读取入口：按时间升序返回最多 limit 根（bid 口径）。"""

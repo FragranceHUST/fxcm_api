@@ -115,11 +115,13 @@ def probe(fx, symbol: str, tf_name: str, fetch=None) -> dict:
 
 def backfill(fx, symbol: str, tf_name: str, years: float, store,
              delay_ms: int = 300, progress=None, fetch=None,
-             resume_floor: bool = False) -> dict:
+             resume_floor: bool = False, stop_on_known: bool = False) -> dict:
     """单品种单周期回填：从库内最新K线（或当前时间）向回走到 now - years 年。
 
     resume_floor=True 时从已有数据的最早点继续向深挖（用于中断续传，
     避免重扫已存区间）；顶部与最早点之间的缺口由顶部补齐阶段负责。
+    stop_on_known=True 时遇到"整块均为已存数据"的窗口即停（启动补洞用：
+    只补 daemon 停机造成的尾部缺口，避免每次重启重扫整个回看窗口）。
     """
     fetch = fetch or fetch_range
     tf_sec = TF_SECONDS[tf_name]
@@ -144,8 +146,14 @@ def backfill(fx, symbol: str, tf_name: str, years: float, store,
             raise
         requests += 1
         if bars:
-            store.upsert_full_candles(symbol, tf_sec, bars)
-            total += len(bars)
+            if stop_on_known:
+                inserted = store.insert_new_full_candles(symbol, tf_sec, bars)
+                total += inserted
+                if inserted == 0:
+                    break           # 整块已知 → 已回到存量区，停止扫描
+            else:
+                store.upsert_full_candles(symbol, tf_sec, bars)
+                total += len(bars)
             new_end = bars[0][0] - 1
             end = new_end if new_end < end else start - 1   # 防御：服务端游标未前移
         else:

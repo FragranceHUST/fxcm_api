@@ -16,8 +16,9 @@ class TestStartupBackfill(unittest.TestCase):
     def test_isolates_per_pair_failures(self):
         calls = []
 
-        def fake_backfill(fx, sym, tf, years, store, delay_ms=300, progress=None, fetch=None):
-            calls.append((sym, tf))
+        def fake_backfill(fx, sym, tf, years, store, delay_ms=300, progress=None,
+                          fetch=None, stop_on_known=False):
+            calls.append((sym, tf, stop_on_known))
             if sym == "XAU/USD":
                 raise RuntimeError("boom")
             return {"bars": 1}
@@ -27,12 +28,14 @@ class TestStartupBackfill(unittest.TestCase):
                                             symbols=["XAU/USD", "EUR/USD"], days=7.0)
 
         self.assertEqual(len(calls), 10)  # 5 周期 × 2 品种，单对失败不中断其余
-        self.assertEqual({tf for _, tf in calls}, {"1m", "15m", "1h", "4h", "1d"})
+        self.assertEqual({tf for _, tf, _ in calls}, {"1m", "15m", "1h", "4h", "1d"})
+        self.assertTrue(all(sk is True for _, _, sk in calls))  # 启动补洞必带 stop_on_known
 
     def test_disabled_window_skips(self):
         calls = []
 
-        def fake_backfill(fx, sym, tf, years, store, delay_ms=300, progress=None, fetch=None):
+        def fake_backfill(fx, sym, tf, years, store, delay_ms=300, progress=None,
+                          fetch=None, stop_on_known=False):
             calls.append(1)
             return {"bars": 0}
 
