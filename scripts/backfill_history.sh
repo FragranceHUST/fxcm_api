@@ -19,10 +19,15 @@ PYTHONPATH=. $PY -m fxcm_api.main --config "$CFG" backfill \
   --tf 1m,15m --years 0.02 --delay-ms "$DELAY" >> "$LOG" 2>&1
 log "阶段1退出码=$?，进入阶段2"
 
-log "阶段2：十年 m1/m15 历史回填（到服务器深度自动停止）"
+log "阶段2a：十年 m1/m15（USD/JPY、EUR/USD 先行，快速探明深度）"
 PYTHONPATH=. $PY -m fxcm_api.main --config "$CFG" backfill \
-  --tf 1m,15m --years 10 --delay-ms "$DELAY" >> "$LOG" 2>&1
-log "阶段2退出码=$?，进入阶段3"
+  --tf 1m,15m --years 10 --delay-ms "$DELAY" --symbols "USD/JPY" "EUR/USD" >> "$LOG" 2>&1
+log "阶段2a退出码=$?，进入阶段2b"
+
+log "阶段2b：十年 m1/m15（XAU/USD 深度最大，压轴过夜跑）"
+PYTHONPATH=. $PY -m fxcm_api.main --config "$CFG" backfill \
+  --tf 1m,15m --years 10 --delay-ms "$DELAY" --symbols "XAU/USD" >> "$LOG" 2>&1
+log "阶段2b退出码=$?，进入阶段3"
 
 log "阶段3：补 D1（USD/JPY、EUR/USD）"
 PYTHONPATH=. $PY -m fxcm_api.main --config "$CFG" backfill \
