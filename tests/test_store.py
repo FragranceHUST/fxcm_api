@@ -146,7 +146,7 @@ class TestBackfill(unittest.TestCase):
             seen.append((s, e))
             return make_fake_fetch(floor_ts - 7200, floor_ts, cap=500)(_fx, _sym, tf_name, s, e)
 
-        r = bf.backfill(None, "XAU/USD", "1m", 7200 / (365 * 86400), self.store,
+        r = bf.backfill(None, "XAU/USD", "1m", 3.0, self.store,
                         delay_ms=0, fetch=spy_fetch, resume_floor=True)
         self.assertGreater(r["bars"], 0)
         self.assertEqual(seen[-1][1], floor_ts)   # 首个窗口从最早点续挖，而非 latest
