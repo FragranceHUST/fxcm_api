@@ -66,6 +66,7 @@ class DaemonSettings:
     data_dir: str = "data"            # 本地存储目录（candles.db）
     guard_enabled: bool = True        # daemon 内置 guard 循环开关
     allow_trading: bool = True        # 本环境是否允许下单（real 建议保持默认并依赖二次确认）
+    startup_backfill_days: float = 7.0  # 启动补洞窗口（天），0=关闭；覆盖停机缺口，超长缺口用回填脚本
 
 
 def load_daemon_settings(path: str | None = None) -> DaemonSettings:

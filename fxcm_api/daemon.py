@@ -27,6 +27,7 @@ from forexconnect import ForexConnect
 
 from fxcm_api.candles import TF_LABELS
 from fxcm_api.config import DaemonSettings, load_daemon_settings
+from fxcm_api.data import backfill as backfill_module
 from fxcm_api.data.hub import MarketHub
 from fxcm_api.data.stats import compute_stats
 from fxcm_api.data.store import CandleStore
@@ -310,6 +311,21 @@ def _closed_trades(fx, limit: int = 500) -> list[dict]:
     return out
 
 
+def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str], days: float) -> None:
+    """重启补洞：复用 real 会话走快照分页通道（fx.get_history 的 pricearchive 通道本网络不可用，勿用）。"""
+    if days <= 0:
+        return
+    fx = mgr.real.fx
+    tf_labels = [lbl for lbl, sec in TF_LABELS.items() if sec in (60, 900, 3600, 14400, 86400)]
+    for tf_label in tf_labels:
+        for sym in symbols:
+            try:
+                r = backfill_module.backfill(fx, sym, tf_label, days / 365.0, store, delay_ms=250)
+                logger.info("启动补洞 %s %s: +%s 根", sym, tf_label, r["bars"])
+            except Exception as exc:
+                logger.warning("启动补洞 %s %s 失败（超长缺口由回填脚本兜底）: %s", sym, tf_label, exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="FXCM 常驻盯盘 daemon（双环境）")
     parser.add_argument("--config", default="config.demo.json",
@@ -349,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=tm.run_loop, name="triggers", daemon=True).start()
         threading.Thread(target=_equity_sampler, args=(mgr, store),
                          name="equity-sampler", daemon=True).start()
+        if daemon_cfg.startup_backfill_days > 0:
+            threading.Thread(target=_startup_backfill,
+                             args=(mgr, store, daemon_cfg.watch_symbols,
+                                   daemon_cfg.startup_backfill_days),
+                             name="startup-backfill", daemon=True).start()
 
         app = build_app(hub, mgr, store, daemon_cfg, tm)
         logger.info("Web 服务: http://%s:%d/", args.host, port)
