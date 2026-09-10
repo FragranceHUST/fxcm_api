@@ -30,18 +30,39 @@ def _is_duplicate_stop_error(exc: Exception) -> bool:
 
 
 class StopManager:
-    def __init__(self, fx: ForexConnect, settings: GuardSettings):
+    def __init__(self, fx: ForexConnect, settings: GuardSettings, fx_provider=None):
         self.fx = fx
         self.settings = settings
+        self._fx_provider = fx_provider
         self.account_id: str = settings.account_id
         self._account_resolved = False
+        self._seen_wrapper: object | None = None
+        self._last_missing_log = 0.0
         self._last_dry_run: dict[str, tuple[str, float]] = {}
         self._pending: dict[str, float] = {}   # trade_id -> 在途窗口截止时间（monotonic）
 
-    def _resolve_account(self) -> None:
+    def _current_fx(self):
+        """每周期解析当前 fx：daemon 会话重连后自动跟随新包装器。
+
+        旧包装器在重连时会被置 _session=None，静态持有会导致 guard 永久失效
+        （18k 条 NoneType 错误的根因），故 daemon 侧传入 fx_provider。
+        """
+        fx = self._fx_provider() if self._fx_provider is not None else self.fx
+        if fx is None:
+            now = time.monotonic()
+            if now - self._last_missing_log > 30.0:
+                logger.warning("会话未就绪（重连中），guard 本周期跳过")
+                self._last_missing_log = now
+            return None
+        if fx is not self._seen_wrapper:
+            self._seen_wrapper = fx
+            self._account_resolved = False      # 新会话重新解析账户
+        return fx
+
+    def _resolve_account(self, fx) -> None:
         if self._account_resolved:
             return
-        accounts = self.fx.get_table(ForexConnect.ACCOUNTS)
+        accounts = fx.get_table(ForexConnect.ACCOUNTS)
         if accounts is None or accounts.size == 0:
             return
         row = accounts.get_row(0)
@@ -49,9 +70,9 @@ class StopManager:
         self._account_resolved = True
         logger.info("管理账户: %s", self.account_id)
 
-    def _snapshots(self) -> list[tuple[TradeSnap, OfferSnap, float]]:
+    def _snapshots(self, fx) -> list[tuple[TradeSnap, OfferSnap, float]]:
         offers: dict[str, OfferSnap] = {}
-        for row in self.fx.get_table(ForexConnect.OFFERS):
+        for row in fx.get_table(ForexConnect.OFFERS):
             offer = OfferSnap(
                 offer_id=row.offer_id,
                 symbol=row.instrument,
@@ -64,7 +85,7 @@ class StopManager:
 
         result: list[tuple[TradeSnap, OfferSnap, float]] = []
         flt = self.settings.symbol_filter
-        for row in self.fx.get_table(ForexConnect.TRADES):
+        for row in fx.get_table(ForexConnect.TRADES):
             offer = offers.get(row.offer_id)
             if offer is None:
                 continue
@@ -90,7 +111,7 @@ class StopManager:
             result.append((trade, offer, pip))
         return result
 
-    def _apply(self, trade: TradeSnap, candidate_new_sl: float, reason: str) -> None:
+    def _apply(self, fx, trade: TradeSnap, candidate_new_sl: float, reason: str) -> None:
         if self.settings.dry_run:
             current = (reason, candidate_new_sl)
             if self._last_dry_run.get(trade.trade_id) == current and not self.settings.verbose:
@@ -103,7 +124,7 @@ class StopManager:
             return
 
         if trade.stop_order_id:
-            request = self.fx.create_order_request(
+            request = fx.create_order_request(
                 order_type=fxcorepy.Constants.Orders.STOP,
                 command=fxcorepy.Constants.Commands.EDIT_ORDER,
                 OFFER_ID=trade.offer_id,
@@ -114,7 +135,7 @@ class StopManager:
             )
         else:
             # 挂到持仓上的止损单方向与持仓相反（买仓的止损是卖方向 STOP 单）
-            request = self.fx.create_order_request(
+            request = fx.create_order_request(
                 order_type=fxcorepy.Constants.Orders.STOP,
                 command=fxcorepy.Constants.Commands.CREATE_ORDER,
                 OFFER_ID=trade.offer_id,
@@ -125,20 +146,23 @@ class StopManager:
                 AMOUNT=trade.amount,
                 SYMBOL=trade.symbol,
             )
-        response = self.fx.send_request(request)
+        response = fx.send_request(request)
         logger.info("#%s %s %s 止损 -> %s (%s) 响应=%s",
                     trade.trade_id, trade.symbol,
                     "BUY" if trade.is_buy else "SELL",
                     candidate_new_sl, reason, repr(response))
 
     def run_cycle(self) -> int:
-        self._resolve_account()
+        fx = self._current_fx()
+        if fx is None:
+            return 0
+        self._resolve_account(fx)
         if not self.account_id:
             logger.warning("账户表尚未就绪，本周期跳过")
             return 0
 
         acted = 0
-        for trade, offer, pip in self._snapshots():
+        for trade, offer, pip in self._snapshots(fx):
             if self._pending.get(trade.trade_id, 0.0) > time.monotonic():
                 continue   # 在途窗口内，等表格刷新反映上一次发单的结果
             try:
@@ -159,7 +183,7 @@ class StopManager:
             if candidate is None:
                 continue
             try:
-                self._apply(trade, candidate.new_sl, candidate.reason)
+                self._apply(fx, trade, candidate.new_sl, candidate.reason)
                 acted += 1
                 self._pending[trade.trade_id] = time.monotonic() + PENDING_WINDOW_S
             except Exception as exc:

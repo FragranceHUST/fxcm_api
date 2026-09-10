@@ -275,7 +275,8 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
 def _start_guard(worker: SessionWorker) -> None:
     if not worker.daemon_cfg.guard_enabled:
         return
-    manager = StopManager(worker.fx, worker.guard)
+    # fx_provider：worker 重连后 guard 自动跟随新会话（静态持有旧包装器会在重连后永久失效）
+    manager = StopManager(worker.fx, worker.guard, fx_provider=lambda: worker.fx)
     threading.Thread(target=manager.run_forever, name=f"guard-{worker.env}",
                      daemon=True).start()
     logger.info("[%s] guard 循环已启动 (dry_run=%s, 品种=%s)",

@@ -203,7 +203,6 @@ class TestDryRun(unittest.TestCase):
         mgr = StopManager(self.FakeFx(), GuardSettings(dry_run=True))
         mgr.account_id = "ACC1"
         trade = make_trade(open_rate=1.10000, is_buy=True, stop_order_id=None)
-
         with self.assertLogs("fxcm_api.stop_manager", level="INFO") as cm:
             mgr._apply(trade, 1.09800, "INIT")
         self.assertEqual(len(cm.records), 1)
@@ -325,6 +324,58 @@ class TestTradeIsBuy(unittest.TestCase):
     def test_buy_sell_s_is_not_buy(self):
         from fxcm_api.trading import trade_is_buy
         self.assertFalse(trade_is_buy(self.FakeTradeRow("S")))
+
+
+class TestGuardFollowsReconnect(unittest.TestCase):
+    """daemon 重连会替换 fx 包装器（旧的 _session 被置空）。
+
+    静态持有旧包装器的 guard 会在重连后永久失效（18k 条 NoneType 错误的根因），
+    StopManager 必须经 fx_provider 每周期动态解析当前会话。
+    """
+
+    class FakeFx:
+        def __init__(self, tag):
+            self.tag = tag
+            self.account_lookups = 0
+
+        def get_table(self, name):
+            key = name.name.lower() if hasattr(name, "name") else str(name).lower()
+            if key == "accounts":
+                self.account_lookups += 1
+                mgr = self
+
+                class Table:
+                    size = 1
+
+                    @staticmethod
+                    def get_row(_i):
+                        return type("R", (), {"account_id": "ACC-" + mgr.tag})()
+
+                return Table()
+            return []
+
+    def test_none_skip_and_follow_swap(self):
+        from fxcm_api.config import GuardSettings
+        from fxcm_api.stop_manager import StopManager
+
+        a, b = self.FakeFx("A"), self.FakeFx("B")
+        current = {"fx": None}
+        mgr = StopManager(None, GuardSettings(dry_run=False),
+                          fx_provider=lambda: current["fx"])
+
+        # 重连空窗：fx=None → 周期安静跳过
+        self.assertEqual(mgr.run_cycle(), 0)
+
+        # 重连到新包装器 A：解析账户
+        current["fx"] = a
+        self.assertEqual(mgr.run_cycle(), 0)
+        self.assertEqual(mgr.account_id, "ACC-A")
+        self.assertEqual(a.account_lookups, 1)
+
+        # 再次重连换到 B：账户重新解析，不沿用旧缓存
+        current["fx"] = b
+        self.assertEqual(mgr.run_cycle(), 0)
+        self.assertEqual(mgr.account_id, "ACC-B")
 
 
 if __name__ == "__main__":
