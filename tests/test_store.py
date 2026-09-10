@@ -149,7 +149,7 @@ class TestBackfill(unittest.TestCase):
         r = bf.backfill(None, "XAU/USD", "1m", 3.0, self.store,
                         delay_ms=0, fetch=spy_fetch, resume_floor=True)
         self.assertGreater(r["bars"], 0)
-        self.assertEqual(seen[-1][1], floor_ts)   # 首个窗口从最早点续挖，而非 latest
+        self.assertEqual(seen[0][1], floor_ts)    # 首个窗口从最早点续挖，而非 latest
         self.assertEqual(r["earliest"], self.store.earliest_ts("XAU/USD", 60))
 
 
