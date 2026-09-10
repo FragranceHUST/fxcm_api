@@ -139,7 +139,7 @@ scripts/run_daemon.sh config.demo.json config.json
 | `DELETE /api/{env}/orders/{id}` `DELETE /api/{env}/triggers/{id}` | 撤单/撤触发器 |
 | `GET /api/{env}/trade-constraints?symbol=` | 最小手数/安全手数上限 |
 | `GET /api/{env}/stats` `/api/{env}/history/trades|orders|messages` | 统计 / 已平仓 / 订单日志 / 服务器消息 |
-| `WS /ws` | 实时报价推送（0.5s） |
+| `WS /ws` | 实时报价推送（tick 事件驱动，到达即推 + 5s 心跳兜底） |
 
 ## 数据模块（fxcm_api/data/）
 
