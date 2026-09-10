@@ -152,7 +152,7 @@ SQLite 单文件 `data/candles.db`（WAL），四张表：
 | `order_journal` | 订单日志：每笔请求与成交（请求价 vs 成交价 → 滑点统计），触发器重启自动恢复 |
 | `backfill_cursor` | 回填游标（断点续传） |
 
-- **统一读取入口**：`CandleStore.get_candles(symbol, tf, start_ts, end_ts, limit)`——回测与实盘系统都从这里取数
+- **统一读取入口**：`CandleStore.get_candles(symbol, tf, start_ts, end_ts, limit)`——实盘与工具从这里取数；量化回测（quant/）用只读 SQL 直连（numpy 数组形态，WAL 共存），大数据量回测不经对象化封装
 - **回填引擎**：走 MarketDataSnapshot 快照分页（单请求 300 根，走交易服务器通道；Price History API 底层 pricearchive 在被墙网络不可用），从最新向最旧游走、按 300ms 限速、`Ctrl+C` 后重跑同一命令即续传，服务端 "No data found" 视为空窗口跳过
 - **实时接入**：OFFERS 更新 → 内存多周期聚合（1s 仅内存、实时刷新用，不落库）；1m/15m/1h/4h 收盘即落库，H4 为 FXCM 原生周期
 - 周期标识：API 用 `1m/15m/1h/4h/1d`，回填/存储同套标识（`1s` 仅实时层）

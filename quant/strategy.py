@@ -37,17 +37,17 @@ class StrategyBase(ABC):
 
     def __init__(self, symbol: str, params: dict,
                  direction_mode: str = "long", total_capital: float = 100_000.0,
-                 per_trade_lots: int = 1, rf_rate: float = 0.0,
+                 quantity: int = 1, rf_rate: float = 0.0,
                  cost_model: CostModel | None = None,
                  unit_value: float = 1.0):
         self.symbol = symbol
         self.params = dict(params)
         self.direction_mode = direction_mode
         self.total_capital = total_capital
-        self.per_trade_lots = per_trade_lots
+        self.quantity = quantity          # 品种原生数量单位（XAU/USD 为盎司，非"手"）
         self.rf_rate = rf_rate
         self.cost_model = cost_model or CostModel()
-        self.unit_value = unit_value
+        self.unit_value = unit_value      # 每 1.0 价格变动 × 每 1 数量单位的 USD 价值
         self.trades: list[Trade] = []
 
     @abstractmethod
@@ -67,7 +67,7 @@ class StrategyBase(ABC):
             be_trigger=prep.get("be_trigger", 0.0),
             be_buffer=prep.get("be_buffer", 0.0),
             cost_per_trade=self.cost_model.total_per_trade,
-            unit_value=self.unit_value, quantity=self.per_trade_lots,
+            unit_value=self.unit_value, quantity=self.quantity,
         )
         self.trades = trades
         stats = self.calc_cost_function(trades)

@@ -46,8 +46,9 @@ docs/BACKTEST_PLAN.md           # 本文档
 ## 2. 数据层
 
 ### 2.1 复用
-- 读取：`CandleStore.get_candles()`（注意默认 limit=5000，DataFeed 提供分页/全量迭代封装）
-- 重采样：`candles.rebuild()` 的 epoch-bucket 口径与实盘层一致，1m→任意 TF 用它而非 pandas resample
+- 读取：回测侧 `quant/data.py DataFeed` 用**只读 SQL 直连**（WAL 共存，numpy 数组形态，
+  绕过 CandleStore 对象化开销与 limit=5000 限制；审查确认与 README 不变量的分工见下）
+- 重采样：`DataFeed.resample()` 的 epoch-bucket 口径与 `candles.rebuild` 一致
 - 评估：回测产出合成 `closed_trades` + `equity_curve` 直接喂现有 `compute_stats()`（14 指标，与实盘 /stats 同口径）
 - 滑点经验值：`order_journal` 的 requested vs filled（实盘真实数据）
 
@@ -66,21 +67,21 @@ docs/BACKTEST_PLAN.md           # 本文档
 
 ### 3.1 两段式：向量化预计算 + 状态机撮合
 1. **预计算（numpy 向量化）**：指标/通道/信号数组一次性算好（H4 波动率通道、m1 穿越信号）；参数化部分只重算依赖参数的数组。
-2. **撮合状态机**：逐 m1 bar 推进（D2 触价制）：
+2. **撮合状态机（numba 逐 m1 bar，B1 批复落地）**：逐根推进（用户要求"过每一笔 m1 candles"）：
    - 挂单期：band 触价→开仓（成交价规则见 B3）
    - 持仓期：m1 high/low 触及 TP/SL 即平（D2）；同根 bar 双触按 B2 裁决
    - 单向单持仓（D4），信号在持仓期被忽略
-3. **批量路径**：引擎对"无持仓 bar 段"用 numpy 跳跃（向量化定位下一个触价事件），把纯 Python 循环压缩到持仓/信号事件附近——预期单组合 10 年 m1 在秒级。
+3. 性能实测：XAU 3 年 m1（~150 万根）单组合 0.7s（numba 编译后），全网格 2156 组合预计 ~25 分钟单核。
 
 ### 3.2 Trade 基类（C++ 口径对齐 + 扩展）
 字段：uuid, instrument, entry_price, exit_price, stoploss_price, profit_target_price,
 commission_rate, commission, profit, quantity, entry_time, exit_time,
 direction(Ask/Bid), real, closed
-扩展：exit_reason(tp/sl/signal/end_of_data), mfe, mae, param_set_id（试验追踪用）
+扩展：exit_reason(tp/sl/be/signal/eod), mfe, mae, param_set_id（试验追踪用）
 
 ### 3.3 Strategy 基类（对齐 C++ Strategy.h）
 属性：type, instrument, params(dict), direction_mode(long/short/both, v1 用前两个),
-total_capital, per_trade_lots, rf_rate, cost_model
+total_capital, quantity（品种原生数量单位，XAU=盎司，非"手"——审查修正）, rf_rate, cost_model
 方法：`run_backtest(feed, start, end)`, `run_realtime(...)`（接 daemon hub 的接口位）,
 `calc_cost_function() -> compute_stats 结果`, `output(path|web)`
 

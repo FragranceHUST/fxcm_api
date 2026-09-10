@@ -160,7 +160,7 @@ def run(data: OHLCV, band_upper: np.ndarray, band_lower: np.ndarray,
         quantity: int = 1, param_set_id: str = "") -> list[Trade]:
     """执行回测并包装为 Trade 列表（profit 已按单位价值折算并扣除成本）。"""
     n = len(data.ts)
-    max_trades = n // 2 + 2
+    max_trades = n + 2                                  # 理论上限 n-1，取余量避免 numba 越界写
     out = {k: np.zeros(max_trades, dtype=np.float64)
            for k in ("dir", "entry_i", "exit_i", "entry_px", "exit_px", "tp", "sl",
                      "reason", "mfe", "mae")}

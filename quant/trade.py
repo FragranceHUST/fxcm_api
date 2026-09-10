@@ -14,7 +14,8 @@ class Direction(IntEnum):
     BID = -1   # C++ DirectionType::Bid —— 空头
 
 
-EXIT_REASONS = ("tp", "sl", "signal", "eod")
+EXIT_REASONS = ("tp", "sl", "be", "signal", "eod")
+# be=保本位平仓（成本价）；signal 为 v2 信号出场预留；eod=数据末尾强平
 
 
 @dataclass

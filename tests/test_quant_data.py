@@ -42,7 +42,7 @@ class TestDataFeed(unittest.TestCase):
     def test_readonly_connection_rejects_writes(self):
         with self.assertRaises(Exception):
             self.feed._conn.execute(
-                "INSERT INTO candles VALUES('X',60,1,1,1,1,1,1,1,1,1,1)")
+                "INSERT INTO candles VALUES('X',60,1,1,1,1,1,1,1,1,1)")
 
     def test_empty_range(self):
         got = self.feed.load("NOPE/USD", 60)
