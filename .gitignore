@@ -33,3 +33,4 @@ venv/
 env/
 .idea/
 .vscode/
+strategies/
