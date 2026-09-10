@@ -137,6 +137,7 @@ let series = null;
 let lastBar = null;
 let ws = null;
 let constraintsData = null;
+let tradePriceLines = [];
 
 const chart = LightweightCharts.createChart(document.getElementById("chart"), {
   layout: { background: { color: "var(--bg)" }, textColor: "#787b86" },
@@ -154,6 +155,41 @@ function makeSeries() {
     wickUpColor: "#26a69a", wickDownColor: "#ef5350",
     priceFormat: { type: "price", precision: digits, minMove: Math.pow(10, -digits) },
   });
+  tradePriceLines = [];
+  series.setMarkers([]);
+}
+
+function updateTradeOverlays(positions) {
+  if (!series) return;
+  tradePriceLines.forEach(pl => series.removePriceLine(pl));
+  tradePriceLines = [];
+  const mine = (positions || []).filter(p => p.symbol === activeSymbol);
+  const digits = DIGITS[activeSymbol] ?? 5;
+  const markers = [];
+  mine.forEach(p => {
+    // canvas 绘制不解析 CSS 变量，颜色用与涨跌色一致的具体色值
+    const color = p.is_buy ? "#26a69a" : "#ef5350";
+    const side = p.is_buy ? "买" : "卖";
+    if (p.open_time) {
+      markers.push({
+        time: Math.floor(p.open_time) + TZ_OFFSET_H * 3600,
+        position: p.is_buy ? "belowBar" : "aboveBar",
+        shape: p.is_buy ? "arrowUp" : "arrowDown",
+        color: color,
+        text: `${side} ${p.amount} @${p.open_rate.toFixed(digits)}`,
+      });
+    }
+    tradePriceLines.push(series.createPriceLine({
+      price: p.open_rate,
+      color: color,
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      axisLabelVisible: true,
+      title: `#${p.trade_id} ${side} ${p.amount}`,
+    }));
+  });
+  markers.sort((a, b) => a.time - b.time);
+  series.setMarkers(markers);
 }
 
 async function loadCandles() {
@@ -365,6 +401,7 @@ async function loadPanel() {
     ]);
     const envs = await envRes.json();
     const positions = await posRes.json();
+    updateTradeOverlays(positions);
     const acct = envs[activeEnv] && envs[activeEnv].account;
     acctRow.innerHTML = acct
       ? `<span><span class="label">环境</span>${activeEnv.toUpperCase()}</span>` +
