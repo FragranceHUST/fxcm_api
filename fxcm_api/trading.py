@@ -8,13 +8,20 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Optional, Protocol
 
 from forexconnect import ForexConnect, fxcorepy
 
 logger = logging.getLogger("fxcm_api.trading")
 
 CUSTOM_ID = "orderguard-validation"
+
+
+class TradeRow(Protocol):
+    """TRADES 表行结构视图（fxcorepy 运行时行对象满足此协议，供静态检查用）。"""
+    trade_id: str
+    offer_id: str
+    open_rate: float
 
 
 def trade_is_buy(row) -> bool:
@@ -64,7 +71,7 @@ def close_trade(fx, account_id: str, trade_id: str, amount: int) -> None:
 
 
 def wait_for_new_trade(fx, offer_id: str, known_ids: set[str],
-                       timeout_s: float = 6.0) -> Optional[object]:
+                       timeout_s: float = 6.0) -> Optional[TradeRow]:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         for row in fx.get_table(ForexConnect.TRADES):
