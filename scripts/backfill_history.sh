@@ -4,6 +4,7 @@
 # 断点续传：中断后重跑本脚本即从库内最新K线继续，无需清理
 set -u
 cd "$(dirname "$0")/.."
+export PYTHONUNBUFFERED=1
 PY=.venv/bin/python
 CFG=${1:-config.json}
 LOG=${2:-/tmp/backfill_history.log}
