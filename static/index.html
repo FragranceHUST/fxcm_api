@@ -366,7 +366,7 @@ async function loadPanel() {
     const cards = [
       ["总PnL", st.total_pnl], ["已实现", st.realized_pnl], ["未实现", st.unrealized_pnl],
       ["胜率", (st.winrate * 100).toFixed(1) + "%"], ["夏普", st.sharpe_ratio],
-      ["最大回撤", st.max_drawdown], ["盈亏比", st.max_profitloss_ratio],
+      ["最大回撤", st.max_drawdown], ["盈亏比", st.max_profitloss_ratio == null ? "∞" : st.max_profitloss_ratio],
       ["连盈/连亏", `${st.max_consecutive_profit}/${st.max_consecutive_loss}`],
       ["交易次数", st.closed_trade_cnt], ["均持仓(分)", st.avg_holding_minutes],
       ["总滑点", st.total_slippage], ["总佣金", st.total_commission],

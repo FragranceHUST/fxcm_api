@@ -47,6 +47,7 @@ def compute_stats(closed_trades: list[dict], open_trades: list[dict] | None = No
 
     max_profit = max(pls) if pls else 0.0
     max_loss_abs = abs(min(pls)) if losses else 0.0
+    # 无亏损交易时盈亏比无定义：有盈利记 ∞，序列化层转 None（前端渲染 ∞）
     max_pl_ratio = (max_profit / max_loss_abs) if max_loss_abs > 0 else \
         (math.inf if max_profit > 0 else 0.0)
 
@@ -64,7 +65,7 @@ def compute_stats(closed_trades: list[dict], open_trades: list[dict] | None = No
     commissions = sum(float(t.get("commission") or 0.0) for t in closed_trades)
     slippage = _total_slippage(journal)
 
-    return {
+    result = {
         "closed_trade_cnt": closed_cnt,
         "trade_cnt": closed_cnt + len(open_trades),
         "open_trade_cnt": len(open_trades),
@@ -85,6 +86,12 @@ def compute_stats(closed_trades: list[dict], open_trades: list[dict] | None = No
         "daily_pnl": daily,
         "avg_holding_minutes": round(avg_holding / 60.0, 1),
     }
+    return {k: _finite(v) for k, v in result.items()}
+
+
+def _finite(v):
+    """inf/nan → None（Starlette JSONResponse 以 allow_nan=False 序列化，非有限浮点直接 500）。"""
+    return None if isinstance(v, float) and not math.isfinite(v) else v
 
 
 def _max_consecutive(pred, values: list[float]) -> int:

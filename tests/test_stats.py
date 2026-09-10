@@ -1,5 +1,6 @@
 """stats.py 单测：CostFunction 指标口径。"""
 
+import json
 import unittest
 from datetime import datetime, timezone
 
@@ -58,6 +59,23 @@ class TestStats(unittest.TestCase):
         self.assertEqual(s["total_pnl"], 125.5)
         self.assertEqual(s["closed_trade_cnt"], 1)
         self.assertEqual(s["trade_cnt"], 2)   # 已平仓 + 未平仓
+
+    def test_all_wins_ratio_is_null_and_serializable(self):
+        trades = [_t(100, 1), _t(300, 2)]
+        s = compute_stats(closed_trades=trades)
+        self.assertIsNone(s["max_profitloss_ratio"])
+        json.dumps(s, allow_nan=False)
+
+    def test_mixed_ratio(self):
+        trades = [_t(100, 1), _t(-25, 1)]
+        s = compute_stats(closed_trades=trades)
+        self.assertEqual(s["max_profitloss_ratio"], 4.0)
+
+    def test_non_finite_floats_sanitized(self):
+        s = compute_stats(closed_trades=[], open_trades=[{"gross_pl": float("nan")}])
+        self.assertIsNone(s["unrealized_pnl"])
+        self.assertIsNone(s["total_pnl"])
+        json.dumps(s, allow_nan=False)
 
 
 if __name__ == "__main__":
