@@ -30,7 +30,7 @@ def _is_duplicate_stop_error(exc: Exception) -> bool:
 
 
 class StopManager:
-    def __init__(self, fx: ForexConnect, settings: GuardSettings, fx_provider=None):
+    def __init__(self, fx: ForexConnect | None, settings: GuardSettings, fx_provider=None):
         self.fx = fx
         self.settings = settings
         self._fx_provider = fx_provider
