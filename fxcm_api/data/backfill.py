@@ -86,6 +86,8 @@ def _fetch_with_retry(fetch, fx, symbol, tf_name, start_ts, end_ts, retries=3):
         except Exception as exc:
             if "No data found" in str(exc):
                 return []                        # 服务端明确无数据 → 空窗口（非瞬态）
+            if "Wait timeout exceeded" in str(exc):
+                raise                            # 账户节流：重试无意义，交给上层冷却
             last_exc = exc
             time.sleep(1.5 * (attempt + 1))
     raise last_exc if last_exc else RuntimeError("fetch failed")
@@ -112,14 +114,23 @@ def probe(fx, symbol: str, tf_name: str, fetch=None) -> dict:
 
 
 def backfill(fx, symbol: str, tf_name: str, years: float, store,
-             delay_ms: int = 300, progress=None, fetch=None) -> dict:
-    """单品种单周期回填：从库内最新K线（或当前时间）向回走到 now - years 年。"""
+             delay_ms: int = 300, progress=None, fetch=None,
+             resume_floor: bool = False) -> dict:
+    """单品种单周期回填：从库内最新K线（或当前时间）向回走到 now - years 年。
+
+    resume_floor=True 时从已有数据的最早点继续向深挖（用于中断续传，
+    避免重扫已存区间）；顶部与最早点之间的缺口由顶部补齐阶段负责。
+    """
     fetch = fetch or fetch_range
     tf_sec = TF_SECONDS[tf_name]
     now = int(time.time())
     target = now - int(years * 365 * 86400)
     latest = store.latest_ts(symbol, tf_sec)
-    end = min(latest, now) if latest else now
+    floor = store.earliest_ts(symbol, tf_sec)
+    if resume_floor and floor:
+        end = floor
+    else:
+        end = min(latest, now) if latest else now
     chunk = CHUNK_SECONDS[tf_name]
     total = 0
     requests = 0

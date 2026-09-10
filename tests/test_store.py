@@ -136,6 +136,22 @@ class TestBackfill(unittest.TestCase):
         self.assertEqual(r["bars"], 0)
         self.assertTrue(self.store.load_backfill_cursor("XAU/USD", 60)[1])
 
+    def test_backfill_resume_floor_continues_from_earliest(self):
+        from fxcm_api.data import backfill as bf
+        floor_ts = 1_700_000_000
+        self.store.upsert_bid_candles("XAU/USD", 60, [(floor_ts, 1.0, 1.0, 1.0, 1.0, 1)])
+        seen = []
+
+        def spy_fetch(_fx, _sym, tf_name, s, e):
+            seen.append((s, e))
+            return make_fake_fetch(floor_ts - 7200, floor_ts, cap=500)(_fx, _sym, tf_name, s, e)
+
+        r = bf.backfill(None, "XAU/USD", "1m", 7200 / (365 * 86400), self.store,
+                        delay_ms=0, fetch=spy_fetch, resume_floor=True)
+        self.assertGreater(r["bars"], 0)
+        self.assertEqual(seen[-1][1], floor_ts)   # 首个窗口从最早点续挖，而非 latest
+        self.assertEqual(r["earliest"], self.store.earliest_ts("XAU/USD", 60))
+
 
 if __name__ == "__main__":
     unittest.main()

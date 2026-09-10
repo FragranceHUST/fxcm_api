@@ -447,7 +447,8 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         for symbol in args.symbols:
             for tf in tf_labels:
                 r = backfill_module.backfill(fx, symbol, tf, args.years, store,
-                                             delay_ms=args.delay_ms, progress=progress)
+                                             delay_ms=args.delay_ms, progress=progress,
+                                             resume_floor=args.resume_floor)
                 print(f"== {symbol} {tf} 完成: {r['bars']} 根 / {r['requests']} 请求")
         return 0
     except KeyboardInterrupt:
@@ -543,6 +544,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_backfill.add_argument("--years", type=float, default=10.0)
     p_backfill.add_argument("--delay-ms", type=int, default=300)
     p_backfill.add_argument("--data-dir", default="data")
+    p_backfill.add_argument("--resume-floor", action="store_true",
+                            help="从已有数据最早点继续向深挖（不重扫已存区间）")
 
     return parser
 
