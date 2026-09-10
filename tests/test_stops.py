@@ -181,7 +181,7 @@ class TestDryRun(unittest.TestCase):
         mgr.account_id = "ACC1"
         trade = make_trade(open_rate=1.10000, is_buy=True, stop_order_id="S1",
                            current_stop=1.09800)
-        mgr._apply(trade, 1.10010, "BE")
+        mgr._apply(fake, trade, 1.10010, "BE")
         self.assertEqual(fake.calls, [])
 
     def test_normal_mode_sends_request(self):
@@ -193,7 +193,7 @@ class TestDryRun(unittest.TestCase):
         mgr.account_id = "ACC1"
         trade = make_trade(open_rate=1.10000, is_buy=True, stop_order_id="S1",
                            current_stop=1.09800)
-        mgr._apply(trade, 1.10010, "BE")
+        mgr._apply(fake, trade, 1.10010, "BE")
         self.assertEqual([c[0] for c in fake.calls], ["create", "send"])
 
     def test_dry_run_log_dedup(self):
@@ -204,14 +204,14 @@ class TestDryRun(unittest.TestCase):
         mgr.account_id = "ACC1"
         trade = make_trade(open_rate=1.10000, is_buy=True, stop_order_id=None)
         with self.assertLogs("fxcm_api.stop_manager", level="INFO") as cm:
-            mgr._apply(trade, 1.09800, "INIT")
+            mgr._apply(self.FakeFx(), trade, 1.09800, "INIT")
         self.assertEqual(len(cm.records), 1)
 
         with self.assertNoLogs("fxcm_api.stop_manager", level="INFO"):
-            mgr._apply(trade, 1.09800, "INIT")   # 相同动作不重复刷屏
+            mgr._apply(self.FakeFx(), trade, 1.09800, "INIT")   # 相同动作不重复刷屏
 
         with self.assertLogs("fxcm_api.stop_manager", level="INFO") as cm2:
-            mgr._apply(trade, 1.09810, "INIT")   # 价位变化时再次输出
+            mgr._apply(self.FakeFx(), trade, 1.09810, "INIT")   # 价位变化时再次输出
         self.assertEqual(len(cm2.records), 1)
 
 
