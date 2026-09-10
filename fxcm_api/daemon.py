@@ -339,8 +339,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from fxcm_api.logs import configure
+    configure()
 
     daemon_cfg = load_daemon_settings(args.config)
     port = args.port or daemon_cfg.port

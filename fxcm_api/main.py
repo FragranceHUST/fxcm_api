@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import sys
 import time
 from datetime import datetime, timezone
@@ -41,8 +40,9 @@ from fxcm_api.trading import (
     wait_trade_gone,
 )
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+from fxcm_api.logs import configure
+
+configure()
 
 DAEMON_URL = "http://127.0.0.1:8911"
 
@@ -358,7 +358,7 @@ def cmd_sl(args: argparse.Namespace) -> int:
                          stop_order_id=(row.stop_order_id or "") or None,
                          current_stop=float(row.stop) if row.stop else None)
         reason = f"MANUAL({'EDIT' if snap.stop_order_id else 'CREATE'})"
-        mgr._apply(snap, round(target, int(offer.digits)), reason)
+        mgr._apply(fx, snap, round(target, int(offer.digits)), reason)
         return 0
     finally:
         disconnect(fx)
