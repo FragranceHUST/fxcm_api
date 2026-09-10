@@ -206,7 +206,8 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
         if worker.fx is None or not acct:
             raise HTTPException(503, f"{env} 会话未就绪")
         return trade_constraints(worker.fx, symbol, acct["equity"],
-                                 pip_overrides=worker.guard.pip_overrides)
+                                 pip_overrides=worker.guard.pip_overrides,
+                                 min_stop_distance_pips=worker.guard.min_stop_distance_pips)
 
     @app.get("/api/{env}/history/trades")
     def history_trades(env: str, limit: int = 200):

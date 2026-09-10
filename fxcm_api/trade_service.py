@@ -51,12 +51,15 @@ def max_safe_amount(symbol: str, price: float, equity: float,
 
 
 def trade_constraints(fx, symbol: str, equity: float,
-                      pip_overrides: dict | None = None) -> dict:
+                      pip_overrides: dict | None = None,
+                      min_stop_distance_pips: float = 0.0) -> dict:
     offer = find_offer(fx, symbol)
     price = float(offer.ask)
     return {
         "symbol": symbol,
         "price": price,
+        "pip_size": pip_size(symbol, float(offer.point_size), int(offer.digits), pip_overrides),
+        "min_stop_distance_pips": min_stop_distance_pips,
         "min_amount": MIN_AMOUNTS.get(symbol, 1),
         "contract_size": CONTRACT_META.get(symbol, {}).get("contract_size", 1.0),
         "mmr": CONTRACT_META.get(symbol, {}).get("mmr", 0.01),
@@ -108,14 +111,16 @@ def market_open(fx, env: str, symbol: str, is_buy: bool, amount: int,
     _journal(store, env, order_type="market", symbol=symbol,
              side="B" if is_buy else "S", amount=amount,
              requested_rate=rate, status="sent")
-    trade_id = wait_for_new_trade(fx, offer.offer_id, known, timeout_s=10.0)
-    if trade_id:
+    trade = wait_for_new_trade(fx, offer.offer_id, known, timeout_s=10.0)
+    if trade is not None:
+        filled = float(trade.open_rate)
         _journal(store, env, order_type="market", symbol=symbol,
                  side="B" if is_buy else "S", amount=amount,
-                 requested_rate=rate, filled_rate=rate, status="filled",
+                 requested_rate=rate, filled_rate=filled, status="filled",
                  sl=kwargs.get("RATE_STOP"), tp=kwargs.get("RATE_LIMIT"),
-                 detail=f"trade_id={trade_id}")
-        return {"ok": True, "trade_id": trade_id, "requested_rate": rate}
+                 detail=f"trade_id={trade.trade_id} open={filled}")
+        return {"ok": True, "trade_id": trade.trade_id, "requested_rate": rate,
+                "filled_rate": filled}
     _journal(store, env, order_type="market", symbol=symbol,
              side="B" if is_buy else "S", amount=amount,
              requested_rate=rate, status="unconfirmed")
