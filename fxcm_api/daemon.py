@@ -143,7 +143,9 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
                                    range_pips=body.get("range_pips"),
                                    sl_pips=body.get("sl_pips"),
                                    tp_pips=body.get("tp_pips"),
-                                   pip_overrides=pip_overrides, store=store)
+                                   pip_overrides=pip_overrides, store=store,
+                                   sl_price=body.get("sl_price"),
+                                   tp_price=body.get("tp_price"))
             if order_type in ("limit", "stop"):
                 return entry_order(worker.fx, env, symbol, is_buy,
                                    float(body["rate"]), amount,

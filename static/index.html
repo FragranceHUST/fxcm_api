@@ -95,6 +95,7 @@
       <span class="label">触发价</span><input id="t-rate" type="number" disabled placeholder="市价免填">
       <span class="label">band(pips)</span><input id="t-band" type="number" value="10">
       <span class="label">SL(pips)</span><input id="t-sl" type="number" placeholder="可选" oninput="updateSlHint()"><span class="hint" id="t-sl-hint"></span>
+      <span class="label">TP(价)</span><input id="t-tp" type="number" placeholder="可选" oninput="updateTpHint()"><span class="hint" id="t-tp-hint"></span>
       <button onclick="submitOrder()">下单</button>
     </div>
     <div class="t-row"><span class="hint" id="t-hint"></span></div>
@@ -195,9 +196,19 @@ async function submitOrder() {
   }
   const sl = parseFloat(document.getElementById("t-sl").value);
   if (sl) body.sl_pips = sl;
+  const tp = parseFloat(document.getElementById("t-tp").value);
+  if (tp) {
+    body.tp_price = tp;
+    if (constraintsData && constraintsData.price) {
+      const wrong = isBuy ? tp <= constraintsData.price : tp >= constraintsData.price;
+      if (wrong) { alert("止盈价方向错误：多头止盈须高于现价，空头止盈须低于现价"); return; }
+    }
+  }
   if (env === "real") {
+    const slv = body.sl_pips ? `SL ${body.sl_pips} pips` : "SL 空（guard 兜底）";
+    const tpv = body.tp_price ? `TP @${body.tp_price}` : "TP 无";
     const msg = `⚠⚠ 真实资金下单确认 ⚠⚠\n${activeSymbol} ${isBuy ? "买入" : "卖出"} ` +
-      `${amount} 手（${type === "market" ? "市价" : type + " @" + body.rate}）\n确认执行？`;
+      `${amount}（${type === "market" ? "市价" : type + " @" + body.rate}）\n${slv} | ${tpv}\n确认执行？`;
     if (!confirm(msg)) return;
     body.confirm = true;
   }
@@ -275,6 +286,21 @@ function updateSlHint() {
     sl < constraintsData.min_stop_distance_pips * 3;
   el.textContent = `≈ $${usd.toFixed(2)} 距现价` + (tight ? " ⚠ 过窄，可能秒止损" : "");
   el.className = "hint" + (tight ? " warn" : "");
+}
+
+function updateTpHint() {
+  const el = document.getElementById("t-tp-hint");
+  const tp = parseFloat(document.getElementById("t-tp").value);
+  if (!constraintsData || !constraintsData.pip_size || !tp) {
+    el.textContent = ""; el.className = "hint"; return;
+  }
+  const isBuy = document.getElementById("t-side").value === "buy";
+  const cur = constraintsData.price;
+  const dist = isBuy ? tp - cur : cur - tp;
+  const wrong = isBuy ? tp <= cur : tp >= cur;
+  el.textContent = wrong ? "⚠ 方向错误（多止盈>现价 / 空止盈<现价）"
+    : `距现价 ${dist.toFixed(2)}（${Math.abs(dist / constraintsData.pip_size).toFixed(0)} pips）`;
+  el.className = "hint" + (wrong ? " warn" : "");
 }
 
 function onLive(quote) {
@@ -444,7 +470,7 @@ function buildTabs() {
   document.getElementById("csv-note").textContent =
     "数据来源：real 行情（OFFERS 实时 + SQLite 历史回填）· 周期 1m/15m/1h/4h · 图表两环境共用 real 数据";
   document.getElementById("t-type").onchange = onTypeChange;
-  document.getElementById("t-side").onchange = onTypeChange;
+  document.getElementById("t-side").onchange = () => { onTypeChange(); updateTpHint(); };
   loadConstraints();
   await loadCandles();
   connectWs();

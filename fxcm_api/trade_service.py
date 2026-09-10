@@ -80,8 +80,11 @@ def _journal(store, env: str, **kw) -> None:
 def market_open(fx, env: str, symbol: str, is_buy: bool, amount: int,
                 range_pips: float | None = None, sl_pips: float | None = None,
                 tp_pips: float | None = None, pip_overrides: dict | None = None,
-                store=None) -> dict:
-    """市价开仓（可选 range/附带止损/止盈），等待成交并记录订单日志。"""
+                store=None, sl_price: float | None = None,
+                tp_price: float | None = None) -> dict:
+    """市价开仓（可选 range/附带止损/止盈），等待成交并记录订单日志。
+
+    sl_price/tp_price 为绝对价格（优先于 *_pips 偏移语义）。"""
     offer = find_offer(fx, symbol)
     account = resolve_account(fx)
     pip = _pip(fx, symbol, pip_overrides)
@@ -97,10 +100,14 @@ def market_open(fx, env: str, symbol: str, is_buy: bool, amount: int,
         kwargs["RATE_MAX"] = round(rate + range_pips * pip, 10)
     else:
         kwargs["ORDER_TYPE"] = fxcorepy.Constants.Orders.TRUE_MARKET_OPEN
-    if sl_pips:
+    if sl_price:
+        kwargs["RATE_STOP"] = round(float(sl_price), 10)
+    elif sl_pips:
         kwargs["RATE_STOP"] = round(rate - sl_pips * pip, 10) if is_buy \
             else round(rate + sl_pips * pip, 10)
-    if tp_pips:
+    if tp_price:
+        kwargs["RATE_LIMIT"] = round(float(tp_price), 10)
+    elif tp_pips:
         kwargs["RATE_LIMIT"] = round(rate + tp_pips * pip, 10) if is_buy \
             else round(rate - tp_pips * pip, 10)
     req = fx.create_order_request(
