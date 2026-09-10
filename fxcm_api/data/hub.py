@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -26,6 +27,7 @@ class MarketHub:
         self.store = store
         self.aggregators: dict[str, CandleAggregator] = {}
         self._offer_ids: dict[str, str] = {}
+        self._ws_subscribers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
 
         offers_table = fx.get_table(ForexConnect.OFFERS)
         for symbol in self.symbols:
@@ -36,6 +38,26 @@ class MarketHub:
         self._listener = TableListener(on_changed_callback=self._on_changed)
         self._listener.subscribe(offers_table)
         logger.info("OFFERS 订阅已建立：%s", ", ".join(self.symbols))
+
+    def subscribe_ws(self) -> asyncio.Event:
+        """注册 WS 推送订阅（在事件循环线程调用）；返回该连接专属唤醒事件。"""
+        loop = asyncio.get_running_loop()
+        evt = asyncio.Event()
+        self._ws_subscribers.add((loop, evt))
+        return evt
+
+    def unsubscribe_ws(self, evt: asyncio.Event) -> None:
+        self._ws_subscribers = {(l, e) for l, e in self._ws_subscribers if e is not evt}
+
+    def _notify_ws(self) -> None:
+        for loop, evt in list(self._ws_subscribers):
+            if loop is None:
+                self._ws_subscribers.discard((loop, evt))
+                continue
+            try:
+                loop.call_soon_threadsafe(evt.set)
+            except RuntimeError:
+                self._ws_subscribers.discard((loop, evt))   # 连接所属循环已关闭
 
     def _on_changed(self, _listener, _row_id, row) -> None:
         symbol = self._offer_ids.get(row.offer_id)
@@ -50,6 +72,7 @@ class MarketHub:
         agg = self.aggregators[symbol]
         before = {g: self._last_bar_ts(agg, g) for g in PERSIST_TFS}
         agg.on_tick(time.time(), bid, ask)
+        self._notify_ws()
         for g in PERSIST_TFS:
             b = before[g]
             if b is None:

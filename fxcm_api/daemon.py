@@ -249,6 +249,7 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
     async def ws(websocket: WebSocket, symbol: str | None = None):
         await websocket.accept()
         targets = [symbol] if symbol in hub.aggregators else list(hub.aggregators)
+        evt = hub.subscribe_ws()
         try:
             while True:
                 payload: dict = {"ts": time.time(), "quotes": {}}
@@ -259,9 +260,15 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
                     bid, ask, ts = tick
                     payload["quotes"][target] = {"bid": bid, "ask": ask, "ts": ts}
                 await websocket.send_json(payload)
-                await asyncio.sleep(0.5)
+                try:
+                    await asyncio.wait_for(evt.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass          # 心跳：无 tick 也周期性推快照
+                evt.clear()       # tick 已唤醒，立即推送下一帧
         except WebSocketDisconnect:
             pass
+        finally:
+            hub.unsubscribe_ws(evt)
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
