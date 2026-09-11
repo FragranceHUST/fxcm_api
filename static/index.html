@@ -35,6 +35,12 @@
   .quote .bid, .quote .ask { font-size: 18px; font-weight: 600; }
   .quote .label { color: var(--muted); font-size: 12px; margin-right: 4px; }
   .quote .spread { color: var(--muted); font-size: 12px; }
+  .quote .ts { color: var(--muted); font-size: 12px; }
+  .ws-state { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .ws-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); }
+  .ws-state.bad { color: var(--down); }
+  .ws-state.bad .ws-dot { background: var(--down); animation: ws-blink 1s infinite; }
+  @keyframes ws-blink { 50% { opacity: 0.15; } }
   #chart { height: calc(100vh - 320px); min-height: 320px; }
   #panel { border-top: 1px solid var(--border); padding: 10px 16px; }
   .acct-row { display: flex; gap: 24px; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
@@ -74,6 +80,7 @@
   <div id="symbol-tabs" class="tabs"></div>
   <div id="tf-tabs" class="tabs"></div>
   <div id="quote" class="quote"></div>
+  <div id="ws-state" class="ws-state bad"><span class="ws-dot"></span><span id="ws-text">连接中</span></div>
 </nav>
 <div id="chart"></div>
 <div id="panel">
@@ -136,6 +143,8 @@ let activeEnv = "demo";
 let series = null;
 let lastBar = null;
 let ws = null;
+let wsSymbol = null;
+let wsReconnectTimer = null;
 let constraintsData = null;
 let tradePriceLines = [];
 
@@ -216,7 +225,8 @@ function renderQuote(q) {
   document.getElementById("quote").innerHTML =
     `<span><span class="label">买</span><span class="bid" style="color:var(--down)">${q.bid.toFixed(digits)}</span></span>` +
     `<span><span class="label">卖</span><span class="ask" style="color:var(--up)">${q.ask.toFixed(digits)}</span></span>` +
-    `<span class="spread">点差 ${spread}</span>`;
+    `<span class="spread">点差 ${spread}</span>` +
+    `<span class="ts" id="quote-ts"></span>`;
 }
 
 async function submitOrder() {
@@ -354,12 +364,35 @@ function onLive(quote) {
   series.update(lastBar);
 }
 
+function setWsState(ok, text) {
+  const el = document.getElementById("ws-state");
+  el.className = "ws-state" + (ok ? "" : " bad");
+  document.getElementById("ws-text").textContent = text;
+}
+
+function markWsFrame() {
+  setWsState(true, "已连接");
+  const ts = document.getElementById("quote-ts");
+  if (ts) ts.textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+}
+
 function connectWs() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (ws && wsSymbol === activeSymbol &&
+      (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
   if (ws) { ws.onclose = null; ws.close(); }
+  setWsState(false, "连接中");
+  wsSymbol = activeSymbol;
   ws = new WebSocket(`ws://${location.host}/ws?symbol=${encodeURIComponent(activeSymbol)}`);
   ws.onmessage = ev => {
     const msg = JSON.parse(ev.data);
     onLive(msg.quotes && msg.quotes[activeSymbol]);
+    markWsFrame();
+  };
+  ws.onclose = () => {
+    if (wsReconnectTimer) return;
+    setWsState(false, "重连中");
+    wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWs(); }, 2500);
   };
 }
 
