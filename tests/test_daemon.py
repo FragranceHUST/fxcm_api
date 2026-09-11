@@ -24,7 +24,9 @@ class TestStartupBackfill(unittest.TestCase):
             return {"bars": 1}
 
         with patch.object(daemon_module.backfill_module, "backfill", fake_backfill):
-            daemon_module._startup_backfill(mgr=_fake_mgr(), store=MagicMock(),
+            store_mock = MagicMock()
+            store_mock.find_gaps.return_value = []
+            daemon_module._startup_backfill(mgr=_fake_mgr(), store=store_mock,
                                             symbols=["XAU/USD", "EUR/USD"], days=7.0)
 
         self.assertEqual(len(calls), 10)  # 5 周期 × 2 品种，单对失败不中断其余

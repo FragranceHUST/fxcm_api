@@ -28,6 +28,7 @@ from forexconnect import ForexConnect
 from fxcm_api.candles import TF_LABELS
 from fxcm_api.config import DaemonSettings, load_daemon_settings
 from fxcm_api.data import backfill as backfill_module
+from fxcm_api.data.backfill import TF_SECONDS
 from fxcm_api.data.hub import MarketHub
 from fxcm_api.data.stats import compute_stats
 from fxcm_api.data.store import CandleStore
@@ -324,12 +325,21 @@ def _closed_trades(fx, limit: int = 500) -> list[dict]:
 
 
 def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str], days: float) -> None:
-    """重启补洞：复用 real 会话走快照分页通道（fx.get_history 的 pricearchive 通道本网络不可用，勿用）。"""
+    """重启补洞：复用 real 会话走快照分页通道（fx.get_history 的 pricearchive 通道本网络不可用，勿用）。
+
+    两段式：1) 尾部补洞（stop_on_known，只扫到存量边界）；
+    2) 中段缺口扫描（窗口回填）——daemon 运行中会话断线造成的"中间洞"。
+    """
     if days <= 0:
         return
     fx = mgr.real.fx
+    if fx is None:
+        return
+    now = int(time.time())
+    window_start = now - int(days * 86400)
     tf_labels = [lbl for lbl, sec in TF_LABELS.items() if sec in (60, 900, 3600, 14400, 86400)]
     for tf_label in tf_labels:
+        tf_sec = TF_SECONDS[tf_label]
         for sym in symbols:
             try:
                 r = backfill_module.backfill(fx, sym, tf_label, days / 365.0, store,
@@ -338,6 +348,21 @@ def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str
                             sym, tf_label, r["bars"], r["requests"])
             except Exception as exc:
                 logger.warning("启动补洞 %s %s 失败（超长缺口由回填脚本兜底）: %s", sym, tf_label, exc)
+            # 中段缺口：相邻K线间隔 > 3 根视为洞（单根缺失多为服务端稀疏，不值得重扫）
+            try:
+                gaps = store.find_gaps(sym, tf_sec, window_start, now,
+                                       min_gap_sec=3 * tf_sec)[:8]
+                for gap_start, gap_end in gaps:
+                    r = backfill_module.backfill(fx, sym, tf_label, 0.0, store,
+                                                 delay_ms=250, start_ts=gap_start,
+                                                 end_ts=gap_end)
+                    logger.info("启动补洞 %s %s 中段缺口 %s→%s: 新增 %s 根",
+                                sym, tf_label,
+                                time.strftime("%m-%d %H:%M", time.gmtime(gap_start)),
+                                time.strftime("%m-%d %H:%M", time.gmtime(gap_end)),
+                                r["bars"])
+            except Exception as exc:
+                logger.warning("启动补洞 %s %s 中段扫描失败: %s", sym, tf_label, exc)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -370,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         store = CandleStore(Path(daemon_cfg.data_dir) / "candles.db")
         hub = MarketHub(mgr.real.fx, daemon_cfg.watch_symbols, store)
+        mgr.real.on_reconnect = hub.resubscribe   # 会话重连后行情订阅随之换绑（否则行情永久停更）
         _start_guard(mgr.demo)
         _start_guard(mgr.real)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 
 from forexconnect import ForexConnect
 
@@ -33,6 +34,7 @@ class SessionWorker:
         self._connected_once = threading.Event()
         self._backoff_idx = 0
         self._last_error = ""
+        self.on_reconnect: Callable[[object], None] | None = None   # 重连成功后回调（daemon 换绑 hub 等订阅）
 
     def start(self, wait_connected: float = 0.0) -> bool:
         """启动会话线程；wait_connected>0 时等待首次连接结果。"""
@@ -68,6 +70,11 @@ class SessionWorker:
         try:
             self.fx = connect(self.cred, retries=4)
             logger.info("[%s] 会话就绪", self.env)
+            if self._connected_once.is_set() and self.on_reconnect:
+                try:
+                    self.on_reconnect(self.fx)
+                except Exception:
+                    logger.exception("[%s] on_reconnect 回调失败", self.env)
         except Exception as exc:
             self._last_error = str(exc)[:120]
             self.fx = None

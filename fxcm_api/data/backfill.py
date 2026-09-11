@@ -115,24 +115,33 @@ def probe(fx, symbol: str, tf_name: str, fetch=None) -> dict:
 
 def backfill(fx, symbol: str, tf_name: str, years: float, store,
              delay_ms: int = 300, progress=None, fetch=None,
-             resume_floor: bool = False, stop_on_known: bool = False) -> dict:
+             resume_floor: bool = False, stop_on_known: bool = False,
+             start_ts: int | None = None, end_ts: int | None = None) -> dict:
     """单品种单周期回填：从库内最新K线（或当前时间）向回走到 now - years 年。
 
     resume_floor=True 时从已有数据的最早点继续向深挖（用于中断续传，
     避免重扫已存区间）；顶部与最早点之间的缺口由顶部补齐阶段负责。
     stop_on_known=True 时遇到"整块均为已存数据"的窗口即停（启动补洞用：
     只补 daemon 停机造成的尾部缺口，避免每次重启重扫整个回看窗口）。
+    start_ts/end_ts 给定时走窗口模式：只回填 [start_ts, end_ts]（中段缺口修补），
+    不写游标。
     """
     fetch = fetch or fetch_range
     tf_sec = TF_SECONDS[tf_name]
     now = int(time.time())
-    target = now - int(years * 365 * 86400)
-    latest = store.latest_ts(symbol, tf_sec)
-    floor = store.earliest_ts(symbol, tf_sec)
-    if resume_floor and floor:
-        end = floor
+    if start_ts is not None and end_ts is not None:
+        windowed = True
+        target: int = start_ts
+        end: int = min(end_ts, now)
     else:
-        end = min(latest, now) if latest else now
+        windowed = False
+        target = now - int(years * 365 * 86400)
+        latest = store.latest_ts(symbol, tf_sec)
+        floor = store.earliest_ts(symbol, tf_sec)
+        if resume_floor and floor:
+            end = floor
+        else:
+            end = min(latest, now) if latest else now
     chunk = CHUNK_SECONDS[tf_name]
     total = 0
     requests = 0
@@ -161,7 +170,8 @@ def backfill(fx, symbol: str, tf_name: str, years: float, store,
         if progress and (requests % 5 == 0 or end <= target):
             progress(symbol, tf_name, total, requests, end)
         time.sleep(delay_ms / 1000.0)
-    store.save_backfill_cursor(symbol, tf_sec, end, True)
+    if not windowed:
+        store.save_backfill_cursor(symbol, tf_sec, end, True)
     return {"symbol": symbol, "tf": tf_name, "bars": total, "requests": requests,
             "earliest": store.earliest_ts(symbol, tf_sec)}
 

@@ -114,6 +114,17 @@ class CandleStore:
                 "SELECT MIN(ts) FROM candles WHERE symbol=? AND tf=?", (symbol, tf)).fetchone()
         return row[0] if row and row[0] is not None else None
 
+    def find_gaps(self, symbol: str, tf: int, start_ts: int, end_ts: int,
+                  min_gap_sec: int) -> list[tuple[int, int]]:
+        """扫描 [start_ts, end_ts] 内超过 min_gap_sec 的相邻K线空洞，返回 (洞起点, 洞终点)。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "WITH o AS (SELECT ts, LAG(ts) OVER (ORDER BY ts) prev FROM candles "
+                "WHERE symbol=? AND tf=? AND ts>=? AND ts<=?) "
+                "SELECT prev, ts FROM o WHERE ts - prev > ? ORDER BY ts",
+                (symbol, tf, start_ts, end_ts, min_gap_sec)).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
     def count(self, symbol: str, tf: int) -> int:
         with self._lock:
             row = self._conn.execute(

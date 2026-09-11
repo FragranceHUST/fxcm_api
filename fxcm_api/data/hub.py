@@ -29,15 +29,24 @@ class MarketHub:
         self._offer_ids: dict[str, str] = {}
         self._ws_subscribers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
 
-        offers_table = fx.get_table(ForexConnect.OFFERS)
         for symbol in self.symbols:
-            offer = find_offer(fx, symbol)
-            self._offer_ids[offer.offer_id] = symbol
             self.aggregators[symbol] = CandleAggregator(symbol)
 
         self._listener = TableListener(on_changed_callback=self._on_changed)
-        self._listener.subscribe(offers_table)
+        self._bind(fx)
         logger.info("OFFERS 订阅已建立：%s", ", ".join(self.symbols))
+
+    def _bind(self, fx) -> None:
+        self._offer_ids.clear()
+        for symbol in self.symbols:
+            offer = find_offer(fx, symbol)
+            self._offer_ids[offer.offer_id] = symbol
+        self._listener.subscribe(fx.get_table(ForexConnect.OFFERS))
+
+    def resubscribe(self, fx) -> None:
+        """会话重连后换绑 OFFERS 订阅：旧订阅随旧会话死亡，不换绑则行情永久停更。"""
+        self._bind(fx)
+        logger.warning("OFFERS 订阅已换绑到新会话")
 
     def subscribe_ws(self) -> asyncio.Event:
         """注册 WS 推送订阅（在事件循环线程调用）；返回该连接专属唤醒事件。"""

@@ -225,6 +225,31 @@ class TestStopOnKnown(unittest.TestCase):
         self.assertEqual(r["bars"], 29)   # 只补 2700..4380 的缺口，存量 0..2640 与 4440 不重写
         self.assertEqual(len(log), 1)     # 1m 分块 CHUNK=4440s ≥ 测试窗口，一请求即覆盖
 
+    def test_windowed_mode_fills_gap_only(self):
+        """窗口模式：只回填 [start,end] 区间，不写游标。"""
+        import time
+        from fxcm_api.data import backfill as bf
+        shift = (int(time.time()) // 60) * 60 - 4500
+        self.store.upsert_full_candles(
+            "XAU/USD", 60, [self._bar(shift + ts) for ts in range(0, 2641, 60)])
+        self.store.upsert_full_candles("XAU/USD", 60, [self._bar(shift + 4440)])
+        log = []
+        r = bf.backfill(None, "XAU/USD", "1m", 0.0, self.store, delay_ms=0,
+                        fetch=self._minute_fetch(log),
+                        start_ts=shift + 2700, end_ts=shift + 4440)
+        self.assertEqual(r["bars"], 29)
+        self.assertTrue(all(s >= shift + 2640 and e <= shift + 4500 for s, e in log))
+        self.assertEqual(self.store.load_backfill_cursor("XAU/USD", 60)[0], None)
+
+    def test_find_gaps(self):
+        bars = [self._bar(ts) for ts in (0, 60, 120, 600, 660, 1800)]
+        self.store.upsert_full_candles("XAU/USD", 60, bars)
+        gaps = self.store.find_gaps("XAU/USD", 60, 0, 3600, min_gap_sec=300)
+        self.assertEqual(gaps, [(120, 600), (660, 1800)])
+        self.assertEqual(self.store.find_gaps("XAU/USD", 60, 0, 3600, min_gap_sec=500),
+                         [(660, 1800)])
+        self.assertEqual(self.store.find_gaps("EUR/USD", 60, 0, 3600, min_gap_sec=300), [])
+
 
 if __name__ == "__main__":
     unittest.main()
