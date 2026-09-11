@@ -110,9 +110,9 @@
   <table>
     <thead><tr>
       <th>trade_id</th><th>品种</th><th>方向</th><th>手数</th>
-      <th>开仓价</th><th>当前止损</th><th>止损单ID</th><th>浮动盈亏</th><th>操作</th>
+      <th>开仓价</th><th>当前止损</th><th>止盈</th><th>止损单ID</th><th>浮动盈亏</th><th>操作</th>
     </tr></thead>
-    <tbody id="pos-body"><tr><td colspan="9" style="color:var(--muted)">加载中…</td></tr></tbody>
+    <tbody id="pos-body"><tr><td colspan="10" style="color:var(--muted)">加载中…</td></tr></tbody>
   </table>
   <div style="margin-top:8px" class="hint">挂单 / 触发器</div>
   <table>
@@ -282,6 +282,30 @@ async function closePos(tradeId) {
   loadPanel();
 }
 
+const COND_LABELS = { tp: "止盈", sl: "止损" };
+
+// kind ∈ tp/sl：prompt 预填现值 → real 确认 → PATCH；后端做方向权威校验，前端只查数字合法性
+async function patchPositionCond(kind, tradeId, cur) {
+  const label = COND_LABELS[kind];
+  const v = prompt(`输入${label}价`, cur > 0 ? cur : "");
+  if (v === null) return;
+  const price = parseFloat(v);
+  if (isNaN(price) || price <= 0) { alert(`${label}价须为大于 0 的数字`); return; }
+  if (activeEnv === "real" &&
+      !confirm(`⚠⚠ 真实资金修改${label}确认 ⚠⚠\n持仓 ${tradeId}\n新${label}价: ${price}\n确认执行？`)) return;
+  const r = await fetch(`/api/${activeEnv}/positions/${tradeId}/${kind}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(activeEnv === "real" ? { price, confirm: true } : { price }),
+  });
+  const j = await r.json();
+  if (!r.ok) { alert(`修改失败: ${j.detail || r.status}`); return; }
+  if (j.ok === false) { alert(`修改失败: ${j.error}`); return; }
+  loadPanel();
+}
+
+function setTp(tradeId, cur) { return patchPositionCond("tp", tradeId, cur); }
+function setSl(tradeId, cur) { return patchPositionCond("sl", tradeId, cur); }
+
 async function cancelOrder(orderId) {
   const r = await fetch(`/api/${activeEnv}/orders/${orderId}`, { method: "DELETE" });
   const j = await r.json();
@@ -443,16 +467,18 @@ async function loadPanel() {
         `<span><span class="label">净值</span>${acct.equity.toFixed(2)}</span>`
       : `<span style="color:var(--muted)">${activeEnv} 会话未就绪</span>`;
     tbody.innerHTML = !positions.length
-      ? `<tr><td colspan="8" style="color:var(--muted)">无持仓</td></tr>`
+      ? `<tr><td colspan="10" style="color:var(--muted)">无持仓</td></tr>`
       : positions.map(p => {
       const d = DIGITS[p.symbol] ?? 5;
       const plColor = p.gross_pl >= 0 ? "var(--up)" : "var(--down)";
       return `<tr><td>${p.trade_id}</td><td>${p.symbol}</td>` +
         `<td class="${p.is_buy ? "pos-buy" : "pos-sell"}">${p.is_buy ? "BUY" : "SELL"}</td>` +
         `<td>${p.amount}</td><td>${p.open_rate.toFixed(d)}</td>` +
-        `<td>${p.stop ? p.stop.toFixed(d) : "无"}</td><td>${p.stop_order_id || "-"}</td>` +
+        `<td>${p.stop ? p.stop.toFixed(d) : "无"}</td><td>${p.limit ? p.limit.toFixed(d) : "无"}</td><td>${p.stop_order_id || "-"}</td>` +
         `<td style="color:${plColor}">${p.gross_pl.toFixed(2)}</td>` +
-        `<td><button class="rowbtn" onclick="closePos('${p.trade_id}')">平仓</button></td></tr>`;
+        `<td><button class="rowbtn" onclick="setTp('${p.trade_id}', ${p.limit ?? 0})">止盈</button> ` +
+        `<button class="rowbtn" onclick="setSl('${p.trade_id}', ${p.stop ?? 0})">止损</button> ` +
+        `<button class="rowbtn" onclick="closePos('${p.trade_id}')">平仓</button></td></tr>`;
       }).join("");
     const pendRes = await fetch(`/api/${activeEnv}/orders`);
     const pend = await pendRes.json();
@@ -500,7 +526,7 @@ async function loadPanel() {
         }).join("")
       : `<tr><td colspan="7" style="color:var(--muted)">暂无已平仓记录</td></tr>`;
   } catch {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--muted)">加载失败</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--muted)">加载失败</td></tr>`;
   }
 }
 
