@@ -50,6 +50,16 @@ from fxcm_api.trading import trade_is_buy
 logger = logging.getLogger("fxcm_api.daemon")
 
 
+def _require_ready(worker: SessionWorker, env: str) -> None:
+    """交易端点统一就绪门。断线窗口内 fx 非 None（旧包装器）且 table 缓存可读
+    （持仓页正常显示），但非 CONNECTED 状态下原生 request_factory 为 None，
+    创建订单会抛 "Can not create request factory"——必须显式拦截。"""
+    if worker.is_ready():
+        return
+    status = worker.status()["status"]
+    raise HTTPException(503, f"{env} 会话未就绪（{status}，自动重连中，请稍后重试）")
+
+
 def _positions_snapshot(fx) -> list[dict]:
     if fx is None:
         return []
@@ -128,8 +138,7 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
         if env not in ("real", "demo"):
             raise HTTPException(404, f"未知环境: {env}")
         worker = mgr.worker(env)
-        if worker.fx is None:
-            raise HTTPException(503, f"{env} 会话未就绪")
+        _require_ready(worker, env)
         if not worker.daemon_cfg.allow_trading:
             raise HTTPException(403, f"{env} 环境已禁用交易（allow_trading=false）")
         if env == "real" and not body.get("confirm"):
@@ -176,9 +185,14 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
     @app.delete("/api/{env}/orders/{order_id}")
     def remove_order(env: str, order_id: str):
         worker = mgr.worker(env)
-        if worker.fx is None:
-            raise HTTPException(503, f"{env} 会话未就绪")
-        return cancel_order(worker.fx, env, order_id, store=store)
+        _require_ready(worker, env)
+        try:
+            return cancel_order(worker.fx, env, order_id, store=store)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[%s] 撤单失败", env)
+            raise HTTPException(500, str(exc)[:200])
 
     @app.delete("/api/{env}/triggers/{trigger_id}")
     def remove_trigger(env: str, trigger_id: str):
@@ -187,36 +201,51 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
     @app.post("/api/{env}/positions/{trade_id}/close")
     def close_pos(env: str, trade_id: str, body: dict | None = None):
         worker = mgr.worker(env)
-        if worker.fx is None:
-            raise HTTPException(503, f"{env} 会话未就绪")
+        _require_ready(worker, env)
         if env == "real" and not (body or {}).get("confirm"):
             raise HTTPException(428, "真实环境平仓需要 confirm=true（二次确认）")
-        return close_position(worker.fx, env, trade_id,
-                              amount=(body or {}).get("amount"), store=store)
+        try:
+            return close_position(worker.fx, env, trade_id,
+                                  amount=(body or {}).get("amount"), store=store)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[%s] 平仓失败", env)
+            raise HTTPException(500, str(exc)[:200])
 
     @app.patch("/api/{env}/positions/{trade_id}/sl")
     def patch_sl(env: str, trade_id: str, body: dict):
         worker = mgr.worker(env)
-        if worker.fx is None:
-            raise HTTPException(503, f"{env} 会话未就绪")
+        _require_ready(worker, env)
         if env == "real" and not body.get("confirm"):
             raise HTTPException(428, "真实环境改损需要 confirm=true（二次确认）")
         if body.get("price") is None:
             raise HTTPException(400, "需要 price（绝对止损价）")
-        return modify_stop(worker.fx, env, trade_id, float(body["price"]),
-                           pip_overrides=worker.guard.pip_overrides, store=store)
+        try:
+            return modify_stop(worker.fx, env, trade_id, float(body["price"]),
+                               pip_overrides=worker.guard.pip_overrides, store=store)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[%s] 改损失败", env)
+            raise HTTPException(500, str(exc)[:200])
 
     @app.patch("/api/{env}/positions/{trade_id}/tp")
     def patch_tp(env: str, trade_id: str, body: dict):
         worker = mgr.worker(env)
-        if worker.fx is None:
-            raise HTTPException(503, f"{env} 会话未就绪")
+        _require_ready(worker, env)
         if env == "real" and not body.get("confirm"):
             raise HTTPException(428, "真实环境改止盈需要 confirm=true（二次确认）")
         if body.get("price") is None:
             raise HTTPException(400, "需要 price（绝对止盈价）")
-        return modify_tp(worker.fx, env, trade_id, float(body["price"]),
-                         pip_overrides=worker.guard.pip_overrides, store=store)
+        try:
+            return modify_tp(worker.fx, env, trade_id, float(body["price"]),
+                             pip_overrides=worker.guard.pip_overrides, store=store)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("[%s] 改止盈失败", env)
+            raise HTTPException(500, str(exc)[:200])
 
     @app.get("/api/{env}/trade-constraints")
     def constraints(env: str, symbol: str = "XAU/USD"):

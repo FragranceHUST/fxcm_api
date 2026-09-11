@@ -88,6 +88,10 @@ class SessionWorker:
         except Exception:
             return "NONE"
 
+    def is_ready(self) -> bool:
+        """可交易判定：仅 CONNECTED 状态下原生 request_factory 非空（下单依赖它）。"""
+        return self._status() == "CONNECTED"
+
     def status(self) -> dict:
         return {"env": self.env, "status": self._status(),
                 "guard_enabled": self.daemon_cfg.guard_enabled,
