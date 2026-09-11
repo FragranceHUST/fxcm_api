@@ -236,6 +236,47 @@ def modify_stop(fx, env: str, trade_id: str, new_sl: float,
     return {"ok": True, "trade_id": trade_id, "stop": float(new_sl)}
 
 
+def modify_tp(fx, env: str, trade_id: str, new_tp: float,
+              pip_overrides: dict | None = None, store=None) -> dict:
+    """手动改止盈：已有 limit 挂单走 EDIT_ORDER，否则新挂 LIMIT 单。
+
+    方向校验（资金安全）：多头止盈须高于 bid、空头须低于 ask——
+    错误侧 LIMIT 单会立即触发市价平仓，客户端必须先行拦截。"""
+    trades = fx.get_table(ForexConnect.TRADES)
+    row = next((t for t in trades if str(t.trade_id) == str(trade_id)), None)
+    if row is None:
+        return {"ok": False, "error": "持仓不存在"}
+    limit_id = getattr(row, "limit_order_id", "") or ""
+    offer_id = row.offer_id
+    offers = fx.get_table(ForexConnect.OFFERS)
+    offer = next((o for o in offers if o.offer_id == offer_id), None)
+    if offer is None:
+        return {"ok": False, "error": "未找到该持仓的行情，无法校验止盈方向"}
+    symbol = offer.instrument
+    is_buy = trade_is_buy(row)
+    if is_buy and float(new_tp) <= float(offer.bid):
+        return {"ok": False, "error": f"多头止盈须高于现价（bid={offer.bid}）"}
+    if not is_buy and float(new_tp) >= float(offer.ask):
+        return {"ok": False, "error": f"空头止盈须低于现价（ask={offer.ask}）"}
+    kwargs: dict = {"OFFER_ID": offer_id, "ACCOUNT_ID": resolve_account(fx),
+                    "RATE": float(new_tp), "TRADE_ID": str(trade_id)}
+    if limit_id:
+        kwargs["ORDER_ID"] = limit_id
+        command = fxcorepy.Constants.Commands.EDIT_ORDER
+    else:
+        command = fxcorepy.Constants.Commands.CREATE_ORDER
+        kwargs["BUY_SELL"] = fxcorepy.Constants.SELL if is_buy \
+            else fxcorepy.Constants.BUY
+        kwargs["AMOUNT"] = int(row.amount)
+        kwargs["SYMBOL"] = symbol
+    req = fx.create_order_request(order_type=fxcorepy.Constants.Orders.LIMIT,
+                                  command=command, **kwargs)
+    fx.send_request(req)
+    _journal(store, env, order_type="modify_tp", symbol=symbol, side="",
+             requested_rate=float(new_tp), status="sent", detail=f"trade_id={trade_id}")
+    return {"ok": True, "trade_id": trade_id, "limit": float(new_tp)}
+
+
 def cancel_order(fx, env: str, order_id: str, store=None) -> dict:
     req = fx.create_order_request(
         order_type=fxcorepy.Constants.Orders.LIMIT_ENTRY,

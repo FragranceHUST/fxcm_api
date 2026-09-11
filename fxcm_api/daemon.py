@@ -41,6 +41,7 @@ from fxcm_api.trade_service import (
     entry_order,
     market_open,
     modify_stop,
+    modify_tp,
     trade_constraints,
     working_orders,
 )
@@ -66,6 +67,8 @@ def _positions_snapshot(fx) -> list[dict]:
             "open_time": getattr(row, "open_time", None),
             "stop": row.stop,
             "stop_order_id": row.stop_order_id or "",
+            "limit": float(getattr(row, "limit", 0.0) or 0.0),
+            "limit_order_id": getattr(row, "limit_order_id", "") or "",
             "gross_pl": row.gross_pl,
         })
     return out
@@ -202,6 +205,18 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
             raise HTTPException(400, "需要 price（绝对止损价）")
         return modify_stop(worker.fx, env, trade_id, float(body["price"]),
                            pip_overrides=worker.guard.pip_overrides, store=store)
+
+    @app.patch("/api/{env}/positions/{trade_id}/tp")
+    def patch_tp(env: str, trade_id: str, body: dict):
+        worker = mgr.worker(env)
+        if worker.fx is None:
+            raise HTTPException(503, f"{env} 会话未就绪")
+        if env == "real" and not body.get("confirm"):
+            raise HTTPException(428, "真实环境改止盈需要 confirm=true（二次确认）")
+        if body.get("price") is None:
+            raise HTTPException(400, "需要 price（绝对止盈价）")
+        return modify_tp(worker.fx, env, trade_id, float(body["price"]),
+                         pip_overrides=worker.guard.pip_overrides, store=store)
 
     @app.get("/api/{env}/trade-constraints")
     def constraints(env: str, symbol: str = "XAU/USD"):

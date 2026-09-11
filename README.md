@@ -136,6 +136,7 @@ scripts/run_daemon.sh config.demo.json config.json
 | `GET /api/{env}/positions` `GET /api/{env}/orders` | 持仓；挂单+触发器 |
 | `POST /api/{env}/orders` | 下单（`order_type: market/limit/stop`；real 需 `confirm: true`） |
 | `POST /api/{env}/positions/{id}/close` `PATCH /api/{env}/positions/{id}/sl` | 平仓（可部分）/改损 |
+| `PATCH /api/{env}/positions/{id}/tp` | 修改止盈（body `{"price": 绝对止盈价}`；real 需 `"confirm": true`） |
 | `DELETE /api/{env}/orders/{id}` `DELETE /api/{env}/triggers/{id}` | 撤单/撤触发器 |
 | `GET /api/{env}/trade-constraints?symbol=` | 最小手数/安全手数上限 |
 | `GET /api/{env}/stats` `/api/{env}/history/trades|orders|messages` | 统计 / 已平仓 / 订单日志 / 服务器消息 |
@@ -164,7 +165,7 @@ CostFunction.h 14 指标全量移植：胜率、盈亏比、最大连续盈/亏�
 ## 测试
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m unittest discover -s tests   # 65 例离线单测
+PYTHONPATH=. .venv/bin/python -m unittest discover -s tests   # 100 例离线单测
 ```
 
 ## Linux / Docker
