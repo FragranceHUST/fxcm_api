@@ -332,15 +332,17 @@ def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str
     """
     if days <= 0:
         return
-    fx = mgr.real.fx
-    if fx is None:
-        return
+    logger.info("启动补洞线程启动（窗口 %.1f 天，尾部补洞 + 中段缺口扫描）", days)
     now = int(time.time())
     window_start = now - int(days * 86400)
     tf_labels = [lbl for lbl, sec in TF_LABELS.items() if sec in (60, 900, 3600, 14400, 86400)]
     for tf_label in tf_labels:
         tf_sec = TF_SECONDS[tf_label]
         for sym in symbols:
+            fx = mgr.real.fx           # 每次现取：会话可能在运行中重连（旧 fx 会变尸体）
+            if fx is None:
+                logger.warning("启动补洞 %s %s 跳过：real 会话未就绪", sym, tf_label)
+                continue
             try:
                 r = backfill_module.backfill(fx, sym, tf_label, days / 365.0, store,
                                              delay_ms=250, stop_on_known=True)
@@ -353,6 +355,9 @@ def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str
                 gaps = store.find_gaps(sym, tf_sec, window_start, now,
                                        min_gap_sec=3 * tf_sec)[:8]
                 for gap_start, gap_end in gaps:
+                    fx = mgr.real.fx
+                    if fx is None:
+                        break
                     r = backfill_module.backfill(fx, sym, tf_label, 0.0, store,
                                                  delay_ms=250, start_ts=gap_start,
                                                  end_ts=gap_end)
@@ -363,6 +368,7 @@ def _startup_backfill(mgr: SessionManager, store: CandleStore, symbols: list[str
                                 r["bars"])
             except Exception as exc:
                 logger.warning("启动补洞 %s %s 中段扫描失败: %s", sym, tf_label, exc)
+    logger.info("启动补洞线程完成")
 
 
 def main(argv: list[str] | None = None) -> int:
