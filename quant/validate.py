@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from quant.cli import load_strategy_class, parse_iso_date, resolve_db
+from quant.cli import load_strategy_class, parse_iso_date, parse_params, resolve_db
 from quant.cost import CostModel
 from quant.data import DataFeed, PreloadedFeed, h4_aligned_start
 from quant.optimize import _csv_cell, _jsonable, _pnl_by_exit_year, _profit_factor, _row
@@ -133,6 +133,7 @@ def cmd_wfa(args) -> int:
                               args.param1_step), 10)
     cost_mult = float(str(args.cost_levels).split(",")[0])
     cost_model = CostModel(spread_rt=args.spread_rt * cost_mult)
+    extra_params = parse_params(args.sparam)
 
     fold_rows: list[dict] = []
     oos_trades: list[Trade] = []
@@ -141,7 +142,7 @@ def cmd_wfa(args) -> int:
         train_start, train_end, test_start, test_end = window
         candidates: list[tuple[float, StrategyBase, BacktestResult]] = []
         for p in grid:
-            strategy = build(params={"param1": float(p)}, symbol=args.symbol,
+            strategy = build(params={"param1": float(p), **extra_params}, symbol=args.symbol,
                              direction_mode=args.direction, quantity=args.quantity,
                              total_capital=args.capital, cost_model=cost_model)
             res = strategy.run_backtest(preloaded, train_start, train_end - 1)

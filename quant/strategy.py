@@ -115,3 +115,13 @@ def nan_forward_fill(a: np.ndarray) -> np.ndarray:
     np.maximum.accumulate(idx, out=idx)
     out[mask] = out[idx[mask]]
     return out
+
+
+def quote_unit_value(symbol: str, close: float | np.ndarray):
+    """每 1.0 价格变动 × 1 数量单位的 USD 价值：USD 报价恒 1；JPY 报价按汇率折算。"""
+    quote = symbol.upper().split("/")[-1]
+    if quote == "USD":
+        return np.ones_like(np.asarray(close, dtype=float)) if np.ndim(close) else 1.0
+    if quote == "JPY":
+        return 1.0 / close
+    raise ValueError(f"暂不支持的报价货币: {quote}（{symbol}）")

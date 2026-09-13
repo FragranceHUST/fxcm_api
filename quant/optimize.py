@@ -15,11 +15,11 @@ from pathlib import Path
 
 import numpy as np
 
-from quant.cli import load_strategy_class, parse_iso_date, resolve_db
+from quant.cli import load_strategy_class, parse_iso_date, parse_params, resolve_db
 from quant.cost import CostModel
 from quant.data import BacktestFeed, DataFeed, PreloadedFeed, h4_aligned_start
 from quant.report import append_sheet
-from quant.strategy import StrategyBase
+from quant.strategy import StrategyBase, quote_unit_value
 from quant.trade import Direction, Trade
 
 
@@ -110,7 +110,7 @@ def _benchmark_row(feed: BacktestFeed, symbol: str, start_ts: int, end_ts: int,
     if len(w) == 0:
         raise SystemExit("基准窗口内无数据，检查数据源与时间范围")
     entry_px, exit_px = float(w.open[0]), float(w.close[-1])
-    uv = 1.0 / exit_px
+    uv = float(quote_unit_value(symbol, exit_px))   # USD 报价=1，JPY 报价=1/exit（勿硬编码 1/exit）
     profit = (exit_px - entry_px - spread_rt) * uv * quantity
     trade = Trade(trade_id=1, instrument=symbol, direction=Direction.ASK,
                   entry_price=entry_px, exit_price=exit_px, quantity=quantity,
@@ -180,13 +180,14 @@ def cmd_sweep(args) -> int:
                               args.param1_step), 10)
     cost_levels = [float(x) for x in str(args.cost_levels).split(",") if x.strip()]
     years = (end_ts - start_ts) / 86400 / 365.25
+    extra_params = parse_params(args.sparam)
 
     rows: list[dict] = []
     for mult in cost_levels:
         cost_model = CostModel(spread_rt=args.spread_rt * mult)
         print(f"=== 成本 ×{mult:g}（spread_rt={args.spread_rt * mult:g}）===")
         for p in grid:
-            strategy = build(params={"param1": float(p)}, symbol=args.symbol,
+            strategy = build(params={"param1": float(p), **extra_params}, symbol=args.symbol,
                              direction_mode=args.direction, quantity=args.quantity,
                              total_capital=args.capital, cost_model=cost_model)
             result = strategy.run_backtest(preloaded, start_ts, end_ts)

@@ -185,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     sw.add_argument("--spread-rt", type=float, default=0.01, help="基准往返点差（价格单位）")
     sw.add_argument("--cost-levels", default="1,2,3", help="成本压力倍数，逗号分隔")
     sw.add_argument("--direction", choices=["long", "short", "both"], default="long")
+    sw.add_argument("--sparam", action="append", default=[],
+                    help="策略额外参数 k=v（并入每个 run 的 params，如 sl_pips=35），可重复")
     sw.add_argument("--label", default="", help="结果标签（进入 meta 与 xlsx sheet 名）")
     sw.add_argument("--xlsx", default=None, help="Excel 工作簿路径（追加式 sheet，不覆盖）")
     sw.add_argument("--out", default="data/quant_results", help="结果输出目录")
@@ -197,6 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     wf.add_argument("--start", default="2020-01-01", help="窗口起始 ISO 日期（UTC）")
     wf.add_argument("--end", default="2025-01-01", help="窗口结束 ISO 日期（UTC，排他）")
     wf.add_argument("--direction", choices=["long", "short", "both"], default="long")
+    wf.add_argument("--sparam", action="append", default=[],
+                    help="策略额外参数 k=v（并入每个 run 的 params，如 sl_pips=35），可重复")
     wf.add_argument("--quantity", type=int, default=50000)
     wf.add_argument("--capital", type=float, default=5000.0)
     wf.add_argument("--spread-rt", type=float, default=0.01, help="往返点差（价格单位）")

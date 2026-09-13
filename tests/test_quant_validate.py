@@ -125,7 +125,7 @@ class TestWfaSmoke(unittest.TestCase):
                 cost_levels="1", train_months=24, test_months=6,
                 param1_start=0.2, param1_stop=0.8, param1_step=0.3,
                 min_train_trades=5, warmup_days=20, out=f"{tmp}/results",
-                label="", xlsx=None)
+                label="", xlsx=None, sparam=[])
 
             from quant.validate import cmd_wfa
 
