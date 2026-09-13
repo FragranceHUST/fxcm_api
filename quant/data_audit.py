@@ -14,6 +14,8 @@ TFS = {"1m": 60, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 
 
 def _is_weekend_bridge(left_ts: int, right_ts: int) -> bool:
+    if right_ts - left_ts > 4 * 86400:      # 超过 4 天的"周末桥"实为多周断档（官方源缺周实测）
+        return False
     left = datetime.fromtimestamp(left_ts, tz=timezone.utc).weekday()
     right = datetime.fromtimestamp(right_ts, tz=timezone.utc).weekday()
     return left == 4 and right in (5, 6, 0)
