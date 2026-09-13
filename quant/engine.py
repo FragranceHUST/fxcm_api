@@ -3,6 +3,7 @@
 语义（全部为已批复锁定项）：
 - 入场：前收在带外、当前收穿回带内 → 按带沿理想价成交（B3；成本单列不进成交价）
 - 持仓：TP/SL 触价即平（D2）；同根双触 SL 优先（B2）；入场当根同样检查退出（保守）
+- 跳空出场：bar 开盘已越过 TP/SL 时按开盘价成交（周末/假日跳空不按理想价美化）
 - 保本：极值触及 entry+be_trigger 后 SL 单调移到 entry+be_buffer
 - 单向单持仓（D4）；band NaN（预热期）不交易；期末未平仓按最后收盘价强平（eod）
 
@@ -80,10 +81,10 @@ def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_
             exit_px = 0.0
             reason = 0
             if l <= sl:
-                exit_px = sl
+                exit_px = o if o <= sl else sl     # 开盘已跳空越过 SL → 按开盘成交
                 reason = 2                       # sl（含保本位）
             elif h >= tp:
-                exit_px = tp
+                exit_px = o if o >= tp else tp
                 reason = 1                       # tp
             if reason != 0:
                 o_dir[count] = 1
@@ -111,10 +112,10 @@ def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_
             exit_px = 0.0
             reason = 0
             if h >= sl:
-                exit_px = sl
+                exit_px = o if o >= sl else sl    # 开盘已跳空越过 SL → 按开盘成交
                 reason = 2
             elif l <= tp:
-                exit_px = tp
+                exit_px = o if o <= tp else tp
                 reason = 1
             if reason != 0:
                 o_dir[count] = -1
@@ -157,8 +158,12 @@ def run(data: OHLCV, band_upper: np.ndarray, band_lower: np.ndarray,
         direction_mode: int = 3, be_enabled: bool = False,
         be_trigger: float = 0.0, be_buffer: float = 0.0,
         cost_per_trade: float = 0.35, unit_value: float = 1.0,
-        quantity: int = 1, param_set_id: str = "") -> list[Trade]:
-    """执行回测并包装为 Trade 列表（profit 已按单位价值折算并扣除成本）。"""
+        quantity: int = 1, param_set_id: str = "",
+        unit_value_arr: np.ndarray | None = None) -> list[Trade]:
+    """执行回测并包装为 Trade 列表（profit 已按单位价值折算并扣除成本）。
+
+    unit_value_arr 提供时按每笔出场 bar 的单位价值折算（JPY 报价 → USD 需按
+    出场时点汇率换算），优先于常量 unit_value。"""
     n = len(data.ts)
     max_trades = n + 2                                  # 理论上限 n-1，取余量避免 numba 越界写
     out = {k: np.zeros(max_trades, dtype=np.float64)
@@ -176,7 +181,8 @@ def run(data: OHLCV, band_upper: np.ndarray, band_lower: np.ndarray,
         ei, xi = int(out["entry_i"][k]), int(out["exit_i"][k])
         entry_px, exit_px = float(out["entry_px"][k]), float(out["exit_px"][k])
         raw = (exit_px - entry_px) if d == 1 else (entry_px - exit_px)
-        profit = raw * unit_value * quantity - cost_per_trade * unit_value * quantity
+        uv = float(unit_value_arr[xi]) if unit_value_arr is not None else unit_value
+        profit = (raw - cost_per_trade) * uv * quantity
         reason = REASON_MAP[int(out["reason"][k])]
         if reason == "sl" and abs(exit_px - entry_px) < 1e-9:
             reason = "be"

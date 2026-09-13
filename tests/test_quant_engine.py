@@ -123,5 +123,114 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(trades, [])
 
 
+class TestEntryFillPrice(unittest.TestCase):
+    def test_band_touched_fills_at_band_edge(self):
+        # bar1 low=99.95 触及 bl=100 → 按带沿理想价 100 成交（B3）
+        bars = [(0, 99.0, 99.2, 98.8, 99.0),
+                (1, 100.1, 100.6, 99.95, 100.5),
+                (2, 100.5, 101.2, 100.4, 101.0)]
+        trades = run(make_data(bars), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.0)
+        self.assertEqual(len(trades), 1)
+        self.assertAlmostEqual(trades[0].entry_price, 100.0)
+
+    def test_gap_over_band_fills_at_open(self):
+        # bar1 开盘 100.3 已在带上方（low 也不触及）→ 按开盘 100.3 成交
+        bars = [(0, 99.0, 99.2, 98.8, 99.0),
+                (1, 100.3, 100.6, 100.3, 100.5),
+                (2, 100.6, 101.5, 100.4, 101.2)]
+        trades = run(make_data(bars), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.0)
+        self.assertEqual(len(trades), 1)
+        self.assertAlmostEqual(trades[0].entry_price, 100.3)
+        self.assertAlmostEqual(trades[0].exit_price, 101.3)
+
+
+class TestExitFillPrice(unittest.TestCase):
+    def test_sl_touched_fills_at_sl(self):
+        # bar2 low=99.0 触及 sl=99、开盘仍在 SL 上方 → 按理想 SL 价成交
+        bars = [(0, 99.0, 99.2, 98.8, 99.0),
+                (1, 99.9, 100.6, 99.9, 100.5),
+                (2, 100.2, 100.3, 99.0, 99.8)]
+        trades = run(make_data(bars), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.0)
+        self.assertEqual(len(trades), 1)
+        t = trades[0]
+        self.assertEqual(t.exit_reason, "sl")
+        self.assertAlmostEqual(t.exit_price, 99.0)
+
+    def test_gap_open_below_sl_fills_at_open(self):
+        # bar2 开盘 98.5 已跳空越过 sl=99（周末/假日缺口）→ 按开盘 98.5 成交，不按 99 美化
+        bars = [(0, 99.0, 99.2, 98.8, 99.0),
+                (1, 99.9, 100.6, 99.9, 100.5),
+                (2, 98.5, 100.2, 98.0, 99.5)]
+        trades = run(make_data(bars), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.0)
+        self.assertEqual(len(trades), 1)
+        t = trades[0]
+        self.assertEqual(t.exit_reason, "sl")
+        self.assertAlmostEqual(t.exit_price, 98.5)
+
+    def test_short_gap_open_above_sl_fills_at_open(self):
+        # 空头镜像：bar2 开盘 111.6 越过 sl=111 → 按开盘成交
+        bars = [(0, 111.0, 111.2, 110.8, 111.0),
+                (1, 109.9, 110.05, 109.8, 109.5),
+                (2, 111.6, 111.8, 110.9, 111.0)]
+        trades = run(make_data(bars), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=2, cost_per_trade=0.0)
+        self.assertEqual(len(trades), 1)
+        t = trades[0]
+        self.assertEqual(t.exit_reason, "sl")
+        self.assertAlmostEqual(t.entry_price, 110.0)
+        self.assertAlmostEqual(t.exit_price, 111.6)
+
+
+class TestUnitValueArr(unittest.TestCase):
+    BARS = [(0, 99.0, 99.2, 98.8, 99.0),
+            (1, 99.9, 100.6, 99.9, 100.5),
+            (2, 100.5, 101.2, 100.4, 101.0)]
+
+    def test_profit_uses_exit_bar_unit_value(self):
+        # 出场 bar（i=2）uv=0.7：profit = (raw−cost) × quantity × uv[exit_i]
+        trades = run(make_data(self.BARS), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.35,
+                     quantity=10, unit_value_arr=np.array([0.5, 0.6, 0.7]))
+        self.assertAlmostEqual(trades[0].profit, (1.0 - 0.35) * 10 * 0.7)
+
+    def test_arr_wins_over_constant(self):
+        trades = run(make_data(self.BARS), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.35,
+                     quantity=10, unit_value=1.0,
+                     unit_value_arr=np.array([0.5, 0.6, 0.7]))
+        self.assertAlmostEqual(trades[0].profit, (1.0 - 0.35) * 10 * 0.7)
+
+    def test_constant_fallback_without_arr(self):
+        trades = run(make_data(self.BARS), *flat_bands(3),
+                     np.array([np.nan, 1.0, 1.0]), np.array([np.nan, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.35,
+                     quantity=10, unit_value=0.7)
+        self.assertAlmostEqual(trades[0].profit, (1.0 - 0.35) * 10 * 0.7)
+
+
+class TestBandNaNIdle(unittest.TestCase):
+    def test_nan_band_zero_trades(self):
+        # 带全 NaN（预热期）→ 引擎空转，即使 tp/sl 有效也不开仓
+        bars = [(0, 99.0, 99.2, 98.8, 99.0),
+                (1, 99.9, 100.6, 99.9, 100.5),
+                (2, 100.5, 101.2, 100.4, 101.0)]
+        trades = run(make_data(bars),
+                     np.full(3, np.nan), np.full(3, np.nan),
+                     np.array([1.0, 1.0, 1.0]), np.array([1.0, 1.0, 1.0]),
+                     instrument="USD/JPY", direction_mode=1, cost_per_trade=0.0)
+        self.assertEqual(trades, [])
+
+
 if __name__ == "__main__":
     unittest.main()

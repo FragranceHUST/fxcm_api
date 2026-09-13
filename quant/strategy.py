@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from quant.cost import CostModel
-from quant.data import DataFeed
+from quant.data import BacktestFeed
 from quant.engine import run as engine_run
 from quant.trade import Trade
 
@@ -51,12 +51,13 @@ class StrategyBase(ABC):
         self.trades: list[Trade] = []
 
     @abstractmethod
-    def prepare(self, feed: DataFeed, start_ts: int, end_ts: int) -> dict:
+    def prepare(self, feed: BacktestFeed, start_ts: int, end_ts: int) -> dict:
         """加载行情并预计算信号数组。返回 run 所需的 dict：
         data(OHLCV), band_upper, band_lower, tp_dist, sl_dist,
-        be_enabled, be_trigger, be_buffer。"""
+        be_enabled, be_trigger, be_buffer（可选 unit_value_arr：逐 bar 单位价值）。"""
+        raise NotImplementedError
 
-    def run_backtest(self, feed: DataFeed, start_ts: int, end_ts: int) -> BacktestResult:
+    def run_backtest(self, feed: BacktestFeed, start_ts: int, end_ts: int) -> BacktestResult:
         prep = self.prepare(feed, start_ts, end_ts)
         mode = {"long": 1, "short": 2, "both": 3}[self.direction_mode]
         trades = engine_run(
@@ -68,6 +69,7 @@ class StrategyBase(ABC):
             be_buffer=prep.get("be_buffer", 0.0),
             cost_per_trade=self.cost_model.total_per_trade,
             unit_value=self.unit_value, quantity=self.quantity,
+            unit_value_arr=prep.get("unit_value_arr"),
         )
         self.trades = trades
         stats = self.calc_cost_function(trades)
