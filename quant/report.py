@@ -36,18 +36,31 @@ def _unique_title(wb: Workbook, title: str) -> str:
     return candidate
 
 
+def _load_or_create(path: Path) -> Workbook:
+    if path.exists():
+        return load_workbook(path)
+    wb = Workbook()
+    first = wb.active
+    assert first is not None
+    wb.remove(first)
+    wb.create_sheet(META_SHEET)
+    return wb
+
+
+def _append_meta(wb: Workbook, meta_lines: list[str] | None) -> None:
+    if not meta_lines:
+        return
+    if META_SHEET not in wb.sheetnames:
+        wb.create_sheet(META_SHEET)
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    wb[META_SHEET].append([ts, *[_cell(line) for line in meta_lines]])
+
+
 def append_sheet(xlsx_path: str | Path, title: str, headers: list[str],
                  rows: list[list], meta_lines: list[str] | None = None) -> None:
     """向工作簿追加一张数据表（永不覆盖已有 sheet）；meta_lines 追加到 meta 流水表。"""
     path = Path(xlsx_path)
-    if path.exists():
-        wb = load_workbook(path)
-    else:
-        wb = Workbook()
-        first = wb.active
-        assert first is not None
-        wb.remove(first)
-        wb.create_sheet(META_SHEET)
+    wb = _load_or_create(path)
     if META_SHEET not in wb.sheetnames:
         wb.create_sheet(META_SHEET)
 
@@ -59,9 +72,31 @@ def append_sheet(xlsx_path: str | Path, title: str, headers: list[str],
         ws.append([_cell(v) for v in row])
     ws.freeze_panes = "A2"
 
-    if meta_lines:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        wb[META_SHEET].append([ts, *[_cell(line) for line in meta_lines]])
+    _append_meta(wb, meta_lines)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+
+
+def append_matrix_sheet(xlsx_path: str | Path, title: str, row_header: str,
+                        row_values: list, col_values: list,
+                        matrix, meta_lines: list[str] | None = None) -> None:
+    """追加 2-D 矩阵表：首列=row_header+row_values，首行=col_values；NaN → 空格。"""
+    path = Path(xlsx_path)
+    wb = _load_or_create(path)
+    if META_SHEET not in wb.sheetnames:
+        wb.create_sheet(META_SHEET)
+
+    ws = wb.create_sheet(_unique_title(wb, title))
+    ws.append([row_header, *[_cell(float(c)) for c in col_values]])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for i, rv in enumerate(row_values):
+        cells = [None if not math.isfinite(v) else float(v) for v in matrix[i]]
+        ws.append([_cell(float(rv)), *[_cell(v) for v in cells]])
+    ws.freeze_panes = "B2"
+
+    _append_meta(wb, meta_lines)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)

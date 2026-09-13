@@ -178,6 +178,13 @@ def main(argv: list[str] | None = None) -> int:
     sw.add_argument("--param1-start", type=float, default=0.0)
     sw.add_argument("--param1-stop", type=float, default=1.0)
     sw.add_argument("--param1-step", type=float, default=0.02)
+    sw.add_argument("--param2-name", default=None,
+                    help="第二维参数名（如 tp_atr_mult=TP 随信号桶 ATR 的倍数）；缺省=单维扫参")
+    sw.add_argument("--param2-start", type=float, default=None)
+    sw.add_argument("--param2-stop", type=float, default=None)
+    sw.add_argument("--param2-step", type=float, default=None)
+    sw.add_argument("--workers", type=int, default=0,
+                    help="并行 worker 进程数（0=自动 cpu-1，1=串行确定性路径）")
     sw.add_argument("--warmup-days", type=int, default=20,
                     help="预热天数（须与策略默认一致，仅用于预加载窗口）")
     sw.add_argument("--quantity", type=int, default=50000)
@@ -211,6 +218,13 @@ def main(argv: list[str] | None = None) -> int:
     wf.add_argument("--param1-start", type=float, default=0.0)
     wf.add_argument("--param1-stop", type=float, default=1.0)
     wf.add_argument("--param1-step", type=float, default=0.02)
+    wf.add_argument("--param2-name", default=None,
+                    help="第二维参数名（如 tp_atr_mult）；缺省=单维选参")
+    wf.add_argument("--param2-start", type=float, default=None)
+    wf.add_argument("--param2-stop", type=float, default=None)
+    wf.add_argument("--param2-step", type=float, default=None)
+    wf.add_argument("--workers", type=int, default=0,
+                    help="并行 worker 进程数（0=自动 cpu-1，1=串行确定性路径）")
     wf.add_argument("--min-train-trades", type=int, default=30,
                     help="折内选参的最低 train 平仓笔数（不足则该折跳过 OOS）")
     wf.add_argument("--warmup-days", type=int, default=20,

@@ -13,7 +13,8 @@ import numpy as np
 
 from quant.cli import parse_iso_date
 from quant.data import OHLCV
-from quant.validate import build_folds
+from quant.validate import (build_folds, neighborhood_mean_sharpe, select_plateau_center,
+                            window_valid_count)
 
 _DAY = 86400
 _MIN_TEST_SPAN = 45 * _DAY
@@ -93,7 +94,62 @@ def synth_m1_years(months: int, start: str, seed: int = 42) -> OHLCV:
                  np.ones(n, dtype=np.int64))
 
 
-class TestWfaSmoke(unittest.TestCase):
+class TestPlateauSelection(unittest.TestCase):
+    """预提交高原选参规则：邻域均值、窗口计数、中心选取与降级路径。"""
+
+    def test_neighborhood_mean_hand_computed(self):
+        sharpe = np.array([[1.0, 2.0, 3.0],
+                           [4.0, 5.0, 6.0],
+                           [7.0, 8.0, 9.0]])
+        nm = neighborhood_mean_sharpe(sharpe, radius=1)
+        self.assertAlmostEqual(nm[1, 1], 5.0)                       # 3×3 全窗
+        self.assertAlmostEqual(nm[0, 0], (1 + 2 + 4 + 5) / 4)       # 边缘窗口 4 有效格
+        self.assertAlmostEqual(nm[0, 1], (1 + 2 + 3 + 4 + 5 + 6) / 6)
+
+    def test_neighborhood_mean_ignores_nan(self):
+        sharpe = np.array([[np.nan, 2.0], [4.0, 6.0]])
+        nm = neighborhood_mean_sharpe(sharpe, radius=1)
+        self.assertAlmostEqual(nm[1, 1], 4.0)                       # (2+4+6)/3
+        self.assertAlmostEqual(nm[0, 0], 4.0)                       # 2×2 矩阵各窗口互含全部有效格
+
+    def test_window_valid_count(self):
+        valid = np.array([[True, False], [False, True]])
+        cnt = window_valid_count(valid, radius=1)
+        self.assertEqual(cnt[0, 0], 2)
+        self.assertEqual(cnt[1, 1], 2)
+
+    def test_plateau_beats_isolated_spike(self):
+        # 11×11 背景 0；孤立尖峰 9@(2,2)；5×5 高原 2.0@(6..10,6..10) → 选高原中心 (8,8)
+        sharpe = np.zeros((11, 11))
+        sharpe[2, 2] = 9.0
+        sharpe[6:11, 6:11] = 2.0
+        trades_ok = np.ones_like(sharpe, dtype=bool)
+        sel = select_plateau_center(sharpe, trades_ok)
+        self.assertEqual(sel, (8, 8))
+
+    def test_trades_ok_filter_and_empty(self):
+        sharpe = np.ones((5, 5))
+        self.assertIsNone(select_plateau_center(sharpe, np.zeros_like(sharpe, dtype=bool)))
+        self.assertIsNone(select_plateau_center(np.full((5, 5), np.nan),
+                                                np.ones_like(sharpe, dtype=bool)))
+
+    def test_single_column_grid_falls_back(self):
+        # 单维网格（n2=1）：邻域覆盖不足 → 降级为合格格中自身 sharpe 最大（v1 规则）
+        sharpe = np.array([[0.1], [5.0], [0.2]])
+        trades_ok = np.ones_like(sharpe, dtype=bool)
+        sel = select_plateau_center(sharpe, trades_ok)
+        self.assertEqual(sel, (1, 0))
+
+    def test_tie_break_first_in_row_major_order(self):
+        # 两块等值 5×5 高原 → 首个合格中心；角落格窗口仅 9/12 有效格 < 13 被排除 → (0,2)
+        sharpe = np.zeros((11, 11))
+        sharpe[0:5, 0:5] = 2.0
+        sharpe[6:11, 6:11] = 2.0
+        sel = select_plateau_center(sharpe, np.ones_like(sharpe, dtype=bool))
+        self.assertEqual(sel, (0, 2))
+
+
+
     def test_smoke_random_walk_two_folds(self):
         # 合成 36 个月随机游走：train 24 / test 6 → 2 折；网格 3 值；松断言（完成 + 聚合行 + 参数在网格内）
         if not _VOL_REVERSAL.exists():
