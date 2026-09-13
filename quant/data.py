@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
@@ -18,6 +19,11 @@ class OHLCV:
 
     def __len__(self) -> int:
         return int(self.ts.shape[0])
+
+
+def h4_aligned_start(ts: int, warmup_days: int, bucket_sec: int = 14400) -> int:
+    """预热起点向下对齐到 K 线桶边界（保证首桶完整；默认 H4=14400s）。"""
+    return (ts - warmup_days * 86400) // bucket_sec * bucket_sec
 
 
 class DataFeed:
@@ -65,3 +71,35 @@ class DataFeed:
             src.close[last],
             np.add.reduceat(src.volume, idx).astype(np.int64),
         )
+
+
+class BacktestFeed(Protocol):
+    """策略侧 feed 最小接口：DataFeed（SQL）与 PreloadedFeed（内存）均满足。"""
+
+    def load(self, symbol: str, tf: int,
+             start_ts: int | None = None, end_ts: int | None = None) -> OHLCV: ...
+
+    def close(self) -> None: ...
+
+
+class PreloadedFeed:
+    """预加载 OHLCV 的内存 feed：load 按 ts 范围做 numpy 切片（无 SQL）。
+
+    供参数扫描在全部 run 间复用一次查询的行情（含预热窗），边界与 SQL 同口径
+    （含 start_ts、含 end_ts）。tf/symbol 仅透传接口，不改变预加载数据集。"""
+
+    def __init__(self, ohlcv: OHLCV):
+        self._ohlcv = ohlcv
+
+    def load(self, symbol: str, tf: int,
+             start_ts: int | None = None, end_ts: int | None = None) -> OHLCV:
+        ts = self._ohlcv.ts
+        lo = 0 if start_ts is None else int(np.searchsorted(ts, int(start_ts), side="left"))
+        hi = ts.shape[0] if end_ts is None else int(np.searchsorted(ts, int(end_ts), side="right"))
+        win = slice(lo, hi)
+        src = self._ohlcv
+        return OHLCV(ts[win], src.open[win], src.high[win], src.low[win],
+                     src.close[win], src.volume[win])
+
+    def close(self) -> None:
+        pass

@@ -4,7 +4,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from quant.data import DataFeed
+from quant.data import DataFeed, h4_aligned_start
 from fxcm_api.data.store import CandleStore
 
 
@@ -47,6 +47,18 @@ class TestDataFeed(unittest.TestCase):
     def test_empty_range(self):
         got = self.feed.load("NOPE/USD", 60)
         self.assertEqual(len(got), 0)
+
+
+class TestH4AlignedStart(unittest.TestCase):
+    def test_down_aligns_to_bucket_boundary(self):
+        ts = 1_600_000_123
+        got = h4_aligned_start(ts, 20)
+        self.assertEqual(got % 14400, 0)
+        self.assertEqual(got, (ts - 20 * 86400) // 14400 * 14400)
+        self.assertLessEqual(got, ts - 20 * 86400)
+
+    def test_custom_bucket_sec(self):
+        self.assertEqual(h4_aligned_start(1_600_000_123, 1, bucket_sec=3600) % 3600, 0)
 
 
 if __name__ == "__main__":
