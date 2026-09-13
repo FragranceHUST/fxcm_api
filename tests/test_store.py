@@ -3,7 +3,7 @@
 import tempfile
 import unittest
 
-from fxcm_api.data.store import CandleStore
+from fxcm_api.data.store import CandleStore, FullBar
 
 
 class TestStore(unittest.TestCase):
@@ -103,10 +103,12 @@ class TestBackfill(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_backfill_walks_with_cap_and_weekend_gaps(self):
-        from datetime import datetime, timezone
+        import time
         from fxcm_api.data import backfill as bf
 
-        now = int(datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc).timestamp())
+        # 锚定真实时钟并对齐整分（backfill 内部用 time.time()；K 线网格按整分，
+        # 硬编码日期会随时间过期失配、不对齐则首根 ts 落在 now−span 之前）
+        now = (int(time.time()) // 60) * 60
         span = 3 * 86400  # 3 天
         fetch = make_fake_fetch(now - span, now, cap=300)
         r = bf.backfill(None, "XAU/USD", "1m", span / (365 * 86400), self.store,
@@ -186,7 +188,7 @@ class TestStopOnKnown(unittest.TestCase):
         self.tmp.cleanup()
 
     @staticmethod
-    def _bar(ts):
+    def _bar(ts: int) -> "FullBar":
         return (ts, 1.0, 1.2, 0.9, 1.1, 1.10001, 1.20001, 0.90001, 1.10002, 1)
 
     @staticmethod
