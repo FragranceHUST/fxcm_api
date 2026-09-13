@@ -1,7 +1,7 @@
 # 量化回测系统设计方案 v1（待批复）
 
 > 目标：在现有 fxcm_api 基础设施（SQLite K线库 / CostFunction 统计 / Web 面板）之上，
-> 构建参数化回测引擎 + 验证方法栈，支撑波动率类策略的大规模参数校验与过拟合防御。
+> 构建参数化回测引擎 + 验证方法栈，支撑信号类策略（规格不入库）的大规模参数校验与过拟合防御。
 > 策略规格本身不入库（见 .gitignore 的 strategies/，规格在会话中批复）。
 
 ## 0. 已批复决策（承自前会话 D1-D12，本方案遵守）
@@ -35,7 +35,7 @@ quant/                          # 回测框架包（入库）
   cli.py         # python -m quant.cli <backtest|sweep|validate|report>
 strategies/                     # ★ gitignore —— 策略实现区（不入库）
   STRATEGY_SPEC.md               # 策略规格（会话批复后落此）
-  vol_reversal.py                # 波动率反转策略
+  signal_a.py                     # 信号策略 A（规格不入库，批复细节见会话记录）
 static/index.html               # +回测子标签页
 tests/test_quant_*.py           # 引擎/数据/验证单测（不含策略逻辑）
 docs/BACKTEST_PLAN.md           # 本文档
@@ -66,7 +66,7 @@ docs/BACKTEST_PLAN.md           # 本文档
 ## 3. 引擎设计
 
 ### 3.1 两段式：向量化预计算 + 状态机撮合
-1. **预计算（numpy 向量化）**：指标/通道/信号数组一次性算好（H4 波动率通道、m1 穿越信号）；参数化部分只重算依赖参数的数组。
+1. **预计算（numpy 向量化）**：指标/通道/信号数组一次性算好（信号定义见策略规格，不入库）；参数化部分只重算依赖参数的数组。
 2. **撮合状态机（numba 逐 m1 bar，B1 批复落地）**：逐根推进（用户要求"过每一笔 m1 candles"）：
    - 挂单期：band 触价→开仓（成交价规则见 B3）
    - 持仓期：m1 high/low 触及 TP/SL 即平（D2）；同根 bar 双触按 B2 裁决
@@ -123,7 +123,7 @@ total_capital, quantity（品种原生数量单位，XAU=盎司，非"手"——
 | M2 并发扫描 | optimize.py 多进程网格 + 结果落库 | 1000 组合全扫完成且进程稳定 |
 | M3 验证栈 | validate.py（WFA/平原/DSR/置换/成本压力） | 报告输出"可信参数区"而非单点 |
 | M4 Web 标签页 | 只读结果页 | 浏览器可查任意试验明细 |
-| M5 策略首轮 | vol_reversal（不入库）+ 全网格 + 首份分析报告 | 含 DSR 与成本压力结论 |
+| M5 策略首轮 | signal_a（不入库）+ 全网格 + 首份分析报告 | 含 DSR 与成本压力结论 |
 
 ## 8. 待批复决策点（B1-B10）
 
@@ -132,7 +132,7 @@ total_capital, quantity（品种原生数量单位，XAU=盎司，非"手"——
 | B1 | 引擎运行时：纯 numpy（零新依赖）vs 引入 numba（C 级循环，pip 新依赖） | 引入 numba（扫参提速 5-20×，Mac 原生支持） |
 | B2 | 同根 m1 内 TP/SL 双触裁决 | 保守：SL 优先（行业标准，不美化结果） |
 | B3 | 触价成交价：按 band/TP/SL 理想价成交 vs 按穿越那根 m1 的 open 成交 | 理想价+半点差成本（触价制语义，保守性由成本压力补足） |
-| B4 | 波动率定义：48h 窗口 max(High)−min(Low)（Donchian 口径） vs 平均每根 H4 (H−L)（ATR 口径，与 VOLATILITY_STOP_PLAN 一致） | v1 用 Donchian（更贴近你"区间"表述），ATR 作对照参数 |
+| B4 | 信号窗口口径：区间极值口径 vs 均值幅度口径（细节见会话批复记录，随规格不入库） | 已批复：v1 用区间极值口径，均值幅度作对照参数 |
 | B5 | 扫参策略：全网格（平原分析需要完整地形） vs Optuna 贝叶斯 | 全网格，上限 ~5000 组合（p1×p2×p3） |
 | B6 | 目标函数：胜率字典序（winrate≥阈值内最大化 sharpe，阈值=全网格 60 分位） vs 加权合成 | 字典序（符合 D8 且避免权重拍脑袋） |
 | B7 | 回测入口：CLI 独立进程 + Web 只读 vs Web 可触发子进程 | v1 CLI+只读（保护交易 daemon 性能），触发按钮 M5 后再说 |
