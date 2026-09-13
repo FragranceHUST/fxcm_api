@@ -91,10 +91,11 @@ def _sharpe_sort_key(row: dict) -> tuple:
     return (s is not None, s if s is not None else 0.0)
 
 
-def _benchmark_pnl_by_year(w, quantity: int) -> dict[str, float]:
+def _benchmark_pnl_by_year(w, quantity: int, symbol: str) -> dict[str, float]:
     """buy-hold 按年归因用逐日盯市：各年 PnL = 年末浮动 PnL − 上年末浮动 PnL（含退出年）。"""
     entry = float(w.open[0])
-    fl = (w.close - entry) * quantity / w.close
+    uv = quote_unit_value(symbol, w.close)          # JPY 报价 1/close，USD 报价恒 1（勿硬编码）
+    fl = (w.close - entry) * quantity * uv
     y0 = datetime.fromtimestamp(int(w.ts[0]), tz=timezone.utc).year
     y1 = datetime.fromtimestamp(int(w.ts[-1]), tz=timezone.utc).year
     bounds = [int(datetime(y, 1, 1, tzinfo=timezone.utc).timestamp())
@@ -123,7 +124,7 @@ def _benchmark_row(feed: BacktestFeed, symbol: str, start_ts: int, end_ts: int,
                   profit=profit, closed=True, exit_reason="eod")
     row = _row(None, None, None, StrategyBase.calc_cost_function([trade]), [trade],
                capital, label="benchmark_buy_hold", years=years)
-    row["pnl_by_year"] = _benchmark_pnl_by_year(w, quantity)   # MTM 按年归因，覆盖平仓年归因
+    row["pnl_by_year"] = _benchmark_pnl_by_year(w, quantity, symbol)   # MTM 按年归因，覆盖平仓年归因
     return row
 
 
@@ -156,6 +157,12 @@ def _csv_cell(v) -> str:
 
 
 # ---------- 网格与并行执行 ----------
+
+def result_base_name(symbol: str, start: str, end: str, kind: str, label: str) -> str:
+    """结果文件基名（含 label，防不同变体互相覆盖）。"""
+    tag = symbol.replace("/", "_")
+    return f"{tag}_{start}_{end}_{kind}_{label or 'default'}"
+
 
 def build_grid(start: float, stop: float, step: float) -> np.ndarray:
     """闭区间等差网格（浮点步长容差：终点 +step/2，再统一取整到 1e-10）。"""
@@ -335,7 +342,7 @@ def cmd_sweep(args) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     symbol_tag = args.symbol.replace("/", "_")
-    base = f"{symbol_tag}_{args.start}_{args.end}_sweep"
+    base = result_base_name(args.symbol, args.start, args.end, "sweep", args.label)
     payload = {
         "meta": {
             "symbol": args.symbol, "strategy": args.strategy,

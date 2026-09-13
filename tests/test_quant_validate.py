@@ -187,7 +187,7 @@ class TestPlateauSelection(unittest.TestCase):
 
             self.assertEqual(cmd_wfa(args), 0)
             payload = json.loads(
-                Path(f"{tmp}/results/USD_JPY_2020-01-01_2022-12-25_wfa.json").read_text())
+                Path(f"{tmp}/results/USD_JPY_2020-01-01_2022-12-25_wfa_default.json").read_text())
             self.assertEqual(len(payload["folds"]), 2)
             agg = payload["aggregate"]
             self.assertEqual(agg["label"], "long_wfa_oos")

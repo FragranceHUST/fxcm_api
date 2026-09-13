@@ -24,8 +24,8 @@ from quant.cli import load_strategy_class, parse_iso_date, parse_params, resolve
 from quant.cost import CostModel
 from quant.data import DataFeed, PreloadedFeed, h4_aligned_start
 from quant.optimize import (_csv_cell, _jsonable, _pnl_by_exit_year, _profit_factor,
-                            _row, build_grid, default_workers, run_backtest_tasks,
-                            wfa_worker)
+                            _row, build_grid, default_workers, result_base_name,
+                            run_backtest_tasks, wfa_worker)
 from quant.report import append_sheet
 from quant.strategy import BacktestResult, StrategyBase
 from quant.trade import Trade
@@ -294,7 +294,7 @@ def cmd_wfa(args) -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     symbol_tag = args.symbol.replace("/", "_")
-    base = f"{symbol_tag}_{args.start}_{args.end}_wfa"
+    base = result_base_name(args.symbol, args.start, args.end, "wfa", args.label)
     payload = {
         "meta": {
             "symbol": args.symbol, "strategy": args.strategy,
