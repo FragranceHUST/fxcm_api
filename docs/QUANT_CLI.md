@@ -1,6 +1,6 @@
 # 回测系统 CLI 参数文档（quant/）
 
-> 适用版本：2026-09-13（commit 5e2385d 之后）。所有窗口时间均为 UTC；`--end` 语义 = 排他（数据截至前一日最后一根 m1）。
+> 适用版本：2026-09-13（V2 二维扫参之后）。所有窗口时间均为 UTC；`--end` 语义 = 排他（数据截至前一日最后一根 m1）。
 
 ## 1. 子命令总览
 
@@ -8,8 +8,8 @@
 |---|---|---|
 | `verify` | M0 数据完备性审计（缺口+覆盖率，周末桥豁免上限 4 天） | ~30s/库 |
 | `backtest` | 单参数集单次回测 | 1-2s |
-| `sweep` | param1 × 成本档全网格 + buy-hold 基准 + JSON/CSV/Excel | 153 run ≈ 21s |
-| `wfa` | Walk-Forward：滚动 train/test 折 + 折内选参 + OOS 拼接 | 10 折 × 51 参 ≈ 20s |
+| `sweep` | param1 × [param2] × 成本档全网格 + buy-hold 基准 + JSON/CSV/Excel/热力图 | 51×191×3 ≈ 29,223 run ≈ 15-20 min（9 workers） |
+| `wfa` | Walk-Forward：滚动 train/test 折 + 折内选参 + OOS 拼接 | 10 折 × 51×191 ≈ 97,410 run ≈ 20-30 min |
 
 ## 2. 通用语义
 
@@ -45,11 +45,14 @@ python -m quant.cli backtest --symbol USD/JPY --start 2020-01-01 --end 2026-09-1
 | 参数（特有） | 默认 | 说明 |
 |---|---|---|
 | `--param1-start/-stop/-step` | 0.0/1.0/0.02 | 51 点网格 |
+| `--param2-name` | — | **第二维参数名**（如 `tp_atr_mult`）；缺省=单维扫参（v1 行为） |
+| `--param2-start/-stop/-step` | — | 第二维网格（须与 `--param2-name` 同时给出；二维时每成本档追加 sharpe/pnl 矩阵 sheet + 热力图 PNG 到 `<out>/heatmaps/`） |
+| `--workers` | 0 | 并行 worker 进程数（0=自动 cpu−1，1=串行确定性路径）；spawn 池每 worker 预加载一次行情 |
 | `--cost-levels` | 1,2,3 | 成本倍数 |
 | `--capital` | 5000 | 年化（CAGR）与 return_pct 的分母 |
 | `--label` | "" | sheet 命名与 meta |
 | `--xlsx` | — | Excel 路径（追加式） |
-| `--sparam k=v` | — | **策略额外参数**并入每个 run（如 `sl_pips=25`、`tp_atr_mult=1.21`），可重复 |
+| `--sparam k=v` | — | **策略额外参数**并入每个 run（如 `sl_pips=300`），可重复；与 `--param2-name` 同名冲突报错 |
 
 ## 5. `wfa`
 
@@ -58,9 +61,12 @@ python -m quant.cli backtest --symbol USD/JPY --start 2020-01-01 --end 2026-09-1
 | `--train-months` / `--test-months` | 24/6 | 滚动窗口（日历月，锚定每月 1 日；裁剪后 test <45 天的折丢弃） |
 | `--min-train-trades` | 30 | 折内选参最低平仓笔数 |
 | `--cost-levels` | 1 | 取第一个倍数（WFA 单成本档） |
+| `--param2-*` / `--workers` | — | 同 sweep |
 | `--sparam` | — | 同 sweep |
 
-输出：逐折表（fold_id/train/test/chosen_p1/is_sharpe/is_pnl/oos_*）+ OOS 拼接聚合行 + 参数分布。选择指标 = sharpe（降序，平手比 PnL）。
+输出：逐折表（fold_id/train/test/chosen_p1/chosen_p2/is_*/oos_*）+ OOS 拼接聚合行 + 参数分布。
+
+**折内选参规则（预提交，勿随结果调整）**：5×5 邻域均值 sharpe 最高的合格格**中心**（合格=自身平仓 ≥ `--min-train-trades` 且邻域有效格 ≥13/25；平票按 p1、p2 升序取首个）。选参只用**折内 train 数据**——禁止用全样本高原限制折内搜索（泄漏）。单维网格/极端稀疏时降级为合格格中自身 sharpe 最大。
 
 ## 6. 策略参数（strategies/vol_reversal.py，gitignored）
 
@@ -68,7 +74,7 @@ python -m quant.cli backtest --symbol USD/JPY --start 2020-01-01 --end 2026-09-1
 |---|---|---|
 | `param1` | 0.5 | 带宽 = H4 ATR(12) × param1，锚点=当前 H4 bar 开盘价 |
 | `tp_pips` / `sl_pips` | 45 / 30 | 固定止盈/止损（品种 pip：JPY 0.01、EUR 0.0001、XAU 0.1） |
-| `tp_atr_mult` / `sl_atr_mult` | —（关闭） | **实验**：两者同时给出时启用波动率归一出场（TP=mult×ATR(12)，随 H4 桶动态）；优先于固定 pips。美日锚定值 1.21/0.80（=45/30 ÷ 中位 ATR 37.3） |
+| `tp_atr_mult` / `sl_atr_mult` | —（关闭） | **V2**：可**独立**启用——给定时该侧距离随信号桶 ATR 缩放（入场时锁定），未给的侧保持固定 pips；两者都缺省 = v1 固定 TP45/SL30。sweep 的 `--param2-name tp_atr_mult` 即扫此参数 |
 | `atr_period` | 12 | ATR 周期（H4 桶数；12=48H） |
 | `warmup_days` | 20 | 预热天数（不交易，仅产 ATR） |
 
