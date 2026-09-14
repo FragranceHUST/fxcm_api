@@ -17,7 +17,8 @@
 - **成本**：`--spread-rt` 为**价格单位**的往返点差（USD/JPY 1.0 pip=0.01；EUR/USD 1.0 pip=0.0001；XAU $0.35=3.5 pips）；sweep 的 `--cost-levels 1,2,3` 对其乘倍数。
 - **损益换算**：USD 报价品种恒 1；JPY 报价按出场 bar 汇率（`quote_unit_value` 单一来源）。
 - **交易语义（锁定批复，勿改）**：触价制（D2）、带沿理想价成交（B3）、同根双触 SL 优先（B2）、单向单持仓（D4）、期末 eod 强平、跳空穿越按开盘价。
-- **输出**：`<out>/{品 种}_{起}_{止}_{sweep|wfa}.json/.csv`；`--xlsx` 追加 sheet（同名自动 -2 去重），网格行按 sharpe 降序、基准行恒末行。
+- **输出**：`<out>/{品种}_{起}_{止}_{sweep|wfa}_{label}.json/.csv`（label 必入文件名，防变体互相覆盖）；`--xlsx` 追加 sheet（同名自动 -2 去重），网格行按 sharpe 降序、基准行恒末行。二维 sweep 每成本档附三联热力图（`<out>/heatmaps/`：`_plateau`=5×5 邻域均值 sharpe、`_pnl`、`_maxdd`）。
+- **结果目录**：`data/quant_results/{v1,v2}/<品种>/`（README 见目录内）；策略参数预设：`strategies/presets/*.json`（说明见 `strategies/README.md`）。
 
 ## 3. `backtest`
 
@@ -60,6 +61,7 @@ python -m quant.cli backtest --symbol USD/JPY --start 2020-01-01 --end 2026-09-1
 |---|---|---|
 | `--train-months` / `--test-months` | 24/6 | 滚动窗口（日历月，锚定每月 1 日；裁剪后 test <45 天的折丢弃） |
 | `--min-train-trades` | 30 | 折内选参最低平仓笔数 |
+| `--oos-topk` | 1 | 每折取 IS 邻域均值 sharpe **前 K 名**分别跑 OOS 后**等权拼接**（1=仅高原中心；K>1 时 fold 行含 `oos_topk` 参数清单，OOS 笔数按 K 放大） |
 | `--cost-levels` | 1 | 取第一个倍数（WFA 单成本档） |
 | `--param2-*` / `--workers` | — | 同 sweep |
 | `--sparam` | — | 同 sweep |
@@ -75,6 +77,9 @@ python -m quant.cli backtest --symbol USD/JPY --start 2020-01-01 --end 2026-09-1
 | `param1` | 0.5 | 带宽 = H4 ATR(12) × param1，锚点=当前 H4 bar 开盘价 |
 | `tp_pips` / `sl_pips` | 45 / 30 | 固定止盈/止损（品种 pip：JPY 0.01、EUR 0.0001、XAU 0.1） |
 | `tp_atr_mult` / `sl_atr_mult` | —（关闭） | **V2**：可**独立**启用——给定时该侧距离随信号桶 ATR 缩放（入场时锁定），未给的侧保持固定 pips；两者都缺省 = v1 固定 TP45/SL30。sweep 的 `--param2-name tp_atr_mult` 即扫此参数 |
+| `be_frac` | —（关闭） | **保本实验**：浮盈达 be_frac×TP 距离 → SL 推至成本价（be_pips 同给时被覆盖）；如 `--sparam be_frac=0.6` |
+| `be_pips` | — | 固定触发距离的保本（pip） |
+| `be_buffer_pips` | 0 | 保本位 = 成本价 ± buffer |
 | `atr_period` | 12 | ATR 周期（H4 桶数；12=48H） |
 | `warmup_days` | 20 | 预热天数（不交易，仅产 ATR） |
 
