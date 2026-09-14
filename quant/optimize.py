@@ -256,8 +256,9 @@ def _pivot(rows: list[dict], p1s: np.ndarray, p2s: list[float], key: str) -> np.
 
 
 def write_heatmap(png_path: Path, p1s: np.ndarray, p2s: list[float],
-                  matrix: np.ndarray, title: str) -> None:
-    """sharpe 热力图 PNG（param1 横轴、param2 纵轴，星标=矩阵最大值）。"""
+                  matrix: np.ndarray, title: str, label: str = "sharpe",
+                  cmap: str = "RdYlGn", mark: str = "max") -> None:
+    """指标热力图 PNG（param1 横轴、param2 纵轴，星标=最优极值）。"""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -267,14 +268,17 @@ def write_heatmap(png_path: Path, p1s: np.ndarray, p2s: list[float],
     extent = (float(p1s[0]) - dx / 2, float(p1s[-1]) + dx / 2,
               float(p2s[0]) - dy / 2, float(p2s[-1]) + dy / 2)
     fig, ax = plt.subplots(figsize=(12, 7), dpi=110)
-    im = ax.imshow(matrix.T, origin="lower", aspect="auto", cmap="RdYlGn",
+    im = ax.imshow(matrix.T, origin="lower", aspect="auto", cmap=cmap,
                    extent=extent, interpolation="nearest")
-    fig.colorbar(im, ax=ax, label="sharpe")
+    fig.colorbar(im, ax=ax, label=label)
     finite = np.isfinite(matrix)
     if finite.any():
-        i, j = np.unravel_index(np.argmax(np.where(finite, matrix, -np.inf)), matrix.shape)
+        if mark == "min":
+            i, j = np.unravel_index(np.argmax(np.where(finite, -matrix, np.inf)), matrix.shape)
+        else:
+            i, j = np.unravel_index(np.argmax(np.where(finite, matrix, -np.inf)), matrix.shape)
         ax.scatter([float(p1s[i])], [float(p2s[j])], marker="*", s=140, color="blue",
-                   zorder=3, label=f"max=({p1s[i]:.2f}, {p2s[j]:.2f})")
+                   zorder=3, label=f"{mark}=({p1s[i]:.2f}, {p2s[j]:.2f})")
         ax.legend(loc="upper left", fontsize=8)
     ax.set_xlabel("param1")
     ax.set_ylabel("param2")
@@ -403,25 +407,32 @@ def _write_sweep_xlsx(args, rows: list[dict], bench: dict, grid1: np.ndarray,
         return
     out_dir = Path(args.out)
     p2_vals = [float(p) for p in grid2 if p is not None]
+    from quant.validate import neighborhood_mean_sharpe   # 延迟导入（validate 反向引用本模块）
     for mult in cost_levels:
         sub = [r for r in rows if r["cost_mult"] == mult]
-        for key, tag in (("sharpe_ratio", "sharpe"), ("total_pnl", "pnl")):
-            mat = _pivot(sub, grid1, p2_vals, key)
+        mats = {k: _pivot(sub, grid1, p2_vals, k)
+                for k in ("sharpe_ratio", "total_pnl", "max_drawdown")}
+        nm = neighborhood_mean_sharpe(mats["sharpe_ratio"])
+        for key, tag in (("sharpe_ratio", "sharpe"), ("total_pnl", "pnl"),
+                         ("max_drawdown", "maxdd")):
             title = f"{args.direction}_{args.label or 'sweep'}_m{mult:g}_{tag}"[:31]
             append_matrix_sheet(args.xlsx, title, "param1",
-                                [float(p) for p in grid1], p2_vals, mat,
+                                [float(p) for p in grid1], p2_vals, mats[key],
                                 meta_lines=[f"cost_mult={mult:g}", f"metric={key}"])
-        png = out_dir / "heatmaps" / (
-            f"{args.symbol.replace('/', '_')}_{args.direction}_{args.label or 'sweep'}"
-            f"_m{mult:g}_sharpe.png")
-        try:
-            write_heatmap(png, grid1, p2_vals,
-                          _pivot(sub, grid1, p2_vals, "sharpe_ratio"),
-                          f"{args.symbol} {args.direction} cost x{mult:g} sharpe")
-            print(f"热力图 → {png}")
-        except ImportError:
-            print("（matplotlib 不可用，跳过热力图）")
-            return
+        png_base = (out_dir / "heatmaps" /
+                    f"{args.symbol.replace('/', '_')}_{args.direction}_{args.label or 'sweep'}_m{mult:g}")
+        for tag, mat, cmap, mark, lab in (
+                ("plateau", nm, "RdYlGn", "max", "nm sharpe (5x5)"),
+                ("pnl", mats["total_pnl"], "RdYlGn", "max", "pnl $"),
+                ("maxdd", mats["max_drawdown"], "RdYlGn_r", "min", "max drawdown $")):
+            try:
+                write_heatmap(Path(f"{png_base}_{tag}.png"), grid1, p2_vals, mat,
+                              f"{args.symbol} {args.direction} cost x{mult:g} {tag}",
+                              label=lab, cmap=cmap, mark=mark)
+            except ImportError:
+                print("（matplotlib 不可用，跳过热力图）")
+                return
+        print(f"热力图 ×3（plateau/pnl/maxdd）→ {png_base}_*.png")
 
 
 def _print_benchmark(bench: dict) -> None:

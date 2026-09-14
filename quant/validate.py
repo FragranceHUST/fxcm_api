@@ -98,16 +98,9 @@ def window_valid_count(valid: np.ndarray, radius: int = PLATEAU_RADIUS) -> np.nd
     return win.sum(axis=(-2, -1))
 
 
-def select_plateau_center(sharpe: np.ndarray, trades_ok: np.ndarray,
-                          min_window_valid: int = PLATEAU_MIN_WINDOW_VALID,
-                          radius: int = PLATEAU_RADIUS) -> tuple[int, int] | None:
-    """预提交选参：邻域均值 sharpe 最高的合格格中心；无合格格返回 None。
-
-    合格 = 自身 sharpe 有效且平仓笔数达标（trades_ok）。邻域有效格数低于
-    min_window_valid 的格子不参与；若无任何格子达标（单维网格/极端稀疏），
-    降级为合格格中自身 sharpe 最大（v1 规则）。平票按 argmax 首个 =
-    (p1 升序, p2 升序)。
-    """
+def _plateau_scores(sharpe: np.ndarray, trades_ok: np.ndarray,
+                    min_window_valid: int, radius: int) -> np.ndarray | None:
+    """合格格打分：邻域均值 sharpe（无格达标时降级为自身 sharpe）；其余 -inf。"""
     valid = np.isfinite(sharpe) & trades_ok
     if not valid.any():
         return None
@@ -115,11 +108,32 @@ def select_plateau_center(sharpe: np.ndarray, trades_ok: np.ndarray,
     cnt = window_valid_count(valid, radius)
     ok = valid & (cnt >= min_window_valid)
     if ok.any():
-        scores = np.where(ok, nm, -np.inf)
-    else:
-        scores = np.where(valid, sharpe, -np.inf)   # 降级：邻域覆盖不足 → 自身 sharpe 最大
-    flat = int(np.argmax(scores))
-    return flat // sharpe.shape[1], flat % sharpe.shape[1]
+        return np.where(ok, nm, -np.inf)
+    return np.where(valid, sharpe, -np.inf)   # 降级：邻域覆盖不足 → 自身 sharpe 最大
+
+
+def select_plateau_topk(sharpe: np.ndarray, trades_ok: np.ndarray, k: int = 1,
+                        min_window_valid: int = PLATEAU_MIN_WINDOW_VALID,
+                        radius: int = PLATEAU_RADIUS) -> list[tuple[int, int]]:
+    """预提交选参：邻域均值 sharpe 降序的前 K 个合格格（平票按 p1、p2 升序）。"""
+    scores = _plateau_scores(sharpe, trades_ok, min_window_valid, radius)
+    if scores is None or k <= 0:
+        return []
+    flat = scores.ravel()
+    out: list[tuple[int, int]] = []
+    for f in np.argsort(-flat, kind="stable"):
+        if len(out) >= k or not np.isfinite(flat[f]):
+            break
+        out.append((int(f) // sharpe.shape[1], int(f) % sharpe.shape[1]))
+    return out
+
+
+def select_plateau_center(sharpe: np.ndarray, trades_ok: np.ndarray,
+                          min_window_valid: int = PLATEAU_MIN_WINDOW_VALID,
+                          radius: int = PLATEAU_RADIUS) -> tuple[int, int] | None:
+    """前 K=1 的便捷形式：邻域均值 sharpe 最高的合格格中心；无合格格返回 None。"""
+    top = select_plateau_topk(sharpe, trades_ok, 1, min_window_valid, radius)
+    return top[0] if top else None
 
 
 def _fold_matrix(cands: list[tuple[float, float | None, dict]], grid1: np.ndarray,
@@ -142,7 +156,7 @@ def _fold_matrix(cands: list[tuple[float, float | None, dict]], grid1: np.ndarra
 def _fold_row(fold_id: int, window: tuple[int, int, int, int],
               chosen_param1: float | None, chosen_param2: float | None,
               is_stats: dict | None, oos_stats: dict | None, oos_trades: list[Trade],
-              capital: float) -> dict:
+              capital: float, oos_topk: str | None = None) -> dict:
     train_start, train_end, test_start, test_end = window
     row: dict = {
         "fold_id": fold_id,
@@ -152,6 +166,7 @@ def _fold_row(fold_id: int, window: tuple[int, int, int, int],
         "test_end": _iso_date(test_end),
         "chosen_param1": chosen_param1,
         "chosen_param2": chosen_param2,
+        "oos_topk": oos_topk,
     }
     if chosen_param1 is None or is_stats is None:
         row.update({k: None for k in (
@@ -205,6 +220,7 @@ def cmd_wfa(args) -> int:
         getattr(args, "param2_start"), getattr(args, "param2_stop"),
         getattr(args, "param2_step"))] if param2_name else [None])
     cost_mult = float(str(args.cost_levels).split(",")[0])
+    oos_topk = max(1, getattr(args, "oos_topk", 1))
     workers = workers_arg if workers_arg > 0 else default_workers()
 
     # 全折 × 全网格的 train run 一次性并行（折间独立）；OOS 在主进程串行
@@ -240,38 +256,49 @@ def cmd_wfa(args) -> int:
         train_start, train_end, test_start, test_end = window
         cands = by_fold.get(fold_id, [])
         sharpe_mat, trades_ok = _fold_matrix(cands, grid1, grid2, args.min_train_trades)
-        sel = select_plateau_center(sharpe_mat, trades_ok)
-        if sel is None:
+        top = select_plateau_topk(sharpe_mat, trades_ok, oos_topk)
+        if not top:
             fold_rows.append(_fold_row(fold_id, window, None, None, None, None, [],
                                        args.capital))
             print(f"fold {fold_id} train {_iso_date(train_start)}→{_iso_date(train_end)} "
                   f"test {_iso_date(test_start)}→{_iso_date(test_end)}: "
                   f"无合格参数（train 平仓 < {args.min_train_trades}），跳过 OOS")
             continue
-        i, j = sel
+        i, j = top[0]
         best_p = float(grid1[i])
         best_p2 = grid2[j] if param2_name else None
         is_stats = next(s for (p1, p2, s) in cands if p1 == best_p and p2 == best_p2)
-        params: dict[str, Any] = {"param1": best_p, **extra_params}
-        if param2_name and best_p2 is not None:
-            params[param2_name] = float(best_p2)
-        strategy = build(params=params, symbol=args.symbol, direction_mode=args.direction,
-                         quantity=args.quantity, total_capital=args.capital,
-                         cost_model=CostModel(spread_rt=args.spread_rt * cost_mult))
-        oos_res = strategy.run_backtest(preloaded, test_start, test_end - 1)
-        oos_stats = oos_res.stats
-        oos_trades.extend(oos_res.trades)
+        oos_res_trades: list[Trade] = []
+        for ci, cj in top:
+            cp1 = float(grid1[ci])
+            cp2 = grid2[cj] if param2_name else None
+            params: dict[str, Any] = {"param1": cp1, **extra_params}
+            if param2_name and cp2 is not None:
+                params[param2_name] = float(cp2)
+            strategy = build(params=params, symbol=args.symbol,
+                             direction_mode=args.direction,
+                             quantity=args.quantity, total_capital=args.capital,
+                             cost_model=CostModel(spread_rt=args.spread_rt * cost_mult))
+            oos_res_trades.extend(strategy.run_backtest(preloaded, test_start, test_end - 1).trades)
+        oos_stats = StrategyBase.calc_cost_function(oos_res_trades)
+        oos_trades.extend(oos_res_trades)
         param_count[(best_p, best_p2)] = param_count.get((best_p, best_p2), 0) + 1
+        k_used = len(top)
+        topk_txt = ";".join(
+            f"{float(grid1[ci]):.2f}|{(f'{grid2[cj]:.2f}' if grid2[cj] is not None else 'const')}"
+            for ci, cj in top)
         fold_rows.append(_fold_row(fold_id, window, best_p, best_p2, is_stats,
-                                   oos_stats, oos_res.trades, args.capital))
+                                   oos_stats, oos_res_trades, args.capital,
+                                   topk_txt if oos_topk > 1 else None))
         p2_txt = f" p2={best_p2:.2f}" if best_p2 is not None else ""
+        tk_txt = f" top{k_used}: {topk_txt} " if oos_topk > 1 else " "
         print(f"fold {fold_id} train {_iso_date(train_start)}→{_iso_date(train_end)} "
               f"test {_iso_date(test_start)}→{_iso_date(test_end)}: "
               f"chosen p1={best_p:.2f}{p2_txt} "
               f"is_sharpe={is_stats['sharpe_ratio']:.2f} "
               f"oos_sharpe={oos_stats['sharpe_ratio']:.2f} "
               f"oos_pnl=${oos_stats['total_pnl']:.2f} "
-              f"oos_trades={oos_stats['closed_trade_cnt']}")
+              f"oos_trades={oos_stats['closed_trade_cnt']}{tk_txt}")
 
     oos_trades.sort(key=lambda t: t.entry_time)
     oos_years = ((folds[-1][3] - folds[0][2]) / 86400 / 365.25
@@ -310,8 +337,12 @@ def cmd_wfa(args) -> int:
             "param2_stop": getattr(args, "param2_stop", None),
             "param2_step": getattr(args, "param2_step", None),
             "grid2_size": len(grid2) if param2_name else None,
-            "selection_rule": ("5x5 邻域均值 sharpe 最大格中心（仅折内 train 数据；"
+            "selection_rule": (f"5x5 邻域均值 sharpe 前 {oos_topk} 名分别跑 OOS 等权拼接"
+                               f"（仅折内 train 数据；平票按 p1、p2 升序）"
+                               if oos_topk > 1 else
+                               "5x5 邻域均值 sharpe 最大格中心（仅折内 train 数据；"
                                "平票按 p1、p2 升序）"),
+            "oos_topk": oos_topk,
             "cost_mult": cost_mult, "spread_rt": args.spread_rt,
             "quantity": args.quantity, "capital": args.capital,
             "warmup_days": warmup_days, "cache_start_ts": cache_start,

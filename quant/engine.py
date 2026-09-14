@@ -28,16 +28,20 @@ except ImportError:          # 纯 Python 兜底（B1 的降级路径）
 
 @njit(cache=True)
 def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_dist,
-               direction_mode, be_enabled, be_trigger, be_buffer,
+               direction_mode, be_enabled, be_trigger_arr, be_buffer,
                o_dir, o_entry_i, o_exit_i, o_entry_px, o_exit_px, o_tp, o_sl,
                o_reason, o_mfe, o_mae):
-    """逐 bar 状态机。返回成交笔数；结果写入预分配的 o_* 数组。"""
+    """逐 bar 状态机。返回成交笔数；结果写入预分配的 o_* 数组。
+
+    be_trigger_arr 为逐 bar 触发距离（策略侧按入场桶快照语义提供）；内核在
+    入场时读取 be_trigger_arr[entry_i] 锁定，与 TP/SL 的入场锁定语义一致。"""
     n = ts.shape[0]
     count = 0
     pos = 0
     entry_px = 0.0
     tp = 0.0
     sl = 0.0
+    trig = 0.0
     entry_i = -1
     mfe = 0.0
     mae = 0.0
@@ -61,6 +65,7 @@ def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_
                 entry_i = i
                 tp = entry_px + tp_dist[i]
                 sl = entry_px - sl_dist[i]
+                trig = be_trigger_arr[i]
                 mfe = 0.0
                 mae = 0.0
             elif short_sig:
@@ -69,6 +74,7 @@ def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_
                 entry_i = i
                 tp = entry_px - tp_dist[i]
                 sl = entry_px + sl_dist[i]
+                trig = be_trigger_arr[i]
                 mfe = 0.0
                 mae = 0.0
         if pos == 1:
@@ -99,7 +105,7 @@ def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_
                 o_mae[count] = mae
                 count += 1
                 pos = 0
-            elif be_enabled and h >= entry_px + be_trigger \
+            elif be_enabled and h >= entry_px + trig \
                     and sl < entry_px + be_buffer:
                 sl = entry_px + be_buffer
         elif pos == -1:
@@ -130,7 +136,7 @@ def run_kernel(ts, open_, high, low, close, band_upper, band_lower, tp_dist, sl_
                 o_mae[count] = mae
                 count += 1
                 pos = 0
-            elif be_enabled and l <= entry_px - be_trigger \
+            elif be_enabled and l <= entry_px - trig \
                     and sl > entry_px - be_buffer:
                 sl = entry_px - be_buffer
     if pos != 0:
@@ -156,22 +162,26 @@ REASON_MAP = {1: "tp", 2: "sl", 3: "eod"}
 def run(data: OHLCV, band_upper: np.ndarray, band_lower: np.ndarray,
         tp_dist: np.ndarray, sl_dist: np.ndarray, instrument: str,
         direction_mode: int = 3, be_enabled: bool = False,
-        be_trigger: float = 0.0, be_buffer: float = 0.0,
+        be_trigger: float | np.ndarray = 0.0, be_buffer: float = 0.0,
         cost_per_trade: float = 0.35, unit_value: float = 1.0,
         quantity: int = 1, param_set_id: str = "",
         unit_value_arr: np.ndarray | None = None) -> list[Trade]:
     """执行回测并包装为 Trade 列表（profit 已按单位价值折算并扣除成本）。
 
     unit_value_arr 提供时按每笔出场 bar 的单位价值折算（JPY 报价 → USD 需按
-    出场时点汇率换算），优先于常量 unit_value。"""
+    出场时点汇率换算），优先于常量 unit_value。be_trigger 标量时自动展开为
+    常量数组；数组时为逐 bar 触发距离（内核按入场 bar 快照）。"""
     n = len(data.ts)
+    be_trigger_arr = be_trigger
+    if not isinstance(be_trigger_arr, np.ndarray):
+        be_trigger_arr = np.full(n, float(be_trigger))
     max_trades = n + 2                                  # 理论上限 n-1，取余量避免 numba 越界写
     out = {k: np.zeros(max_trades, dtype=np.float64)
            for k in ("dir", "entry_i", "exit_i", "entry_px", "exit_px", "tp", "sl",
                      "reason", "mfe", "mae")}
     count = run_kernel(data.ts, data.open, data.high, data.low, data.close,
                        band_upper, band_lower, tp_dist, sl_dist,
-                       direction_mode, be_enabled, be_trigger, be_buffer,
+                       direction_mode, be_enabled, be_trigger_arr, be_buffer,
                        out["dir"], out["entry_i"], out["exit_i"], out["entry_px"],
                        out["exit_px"], out["tp"], out["sl"], out["reason"],
                        out["mfe"], out["mae"])

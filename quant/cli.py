@@ -227,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="并行 worker 进程数（0=自动 cpu-1，1=串行确定性路径）")
     wf.add_argument("--min-train-trades", type=int, default=30,
                     help="折内选参的最低 train 平仓笔数（不足则该折跳过 OOS）")
+    wf.add_argument("--oos-topk", type=int, default=1,
+                    help="每折取 IS 邻域前 K 组参数分别跑 OOS 并等权拼接（1=仅取高原中心，默认）")
     wf.add_argument("--warmup-days", type=int, default=20,
                     help="预热天数（须与策略默认一致，仅用于预加载窗口）")
     wf.add_argument("--out", default="data/quant_results", help="结果输出目录")
