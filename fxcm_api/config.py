@@ -27,6 +27,7 @@ class GuardSettings:
     initial_sl_atr_mult: float = 0.0  # >0：初始止损=倍数×ATR(H4,12)（随波动率），覆盖 initial_sl_pips
     be_trigger_pips: float = 5.0      # 浮盈达到该点数后推保本，0 = 关闭
     be_trigger_pips_by_side: dict[str, float] | None = None   # {"buy":10,"sell":8} 按方向覆盖 be_trigger_pips
+    be_trigger_pips_by_custom_id: dict[str, float] | None = None  # {"quad-F1S":8} 按持仓 CUSTOM_ID 覆盖（策略臂优先于方向）
     be_buffer_pips: float = 1.0       # 止损推至开仓价±该点数
     use_trailing: bool = False        # 移动止损（V2 预留，默认关）
     trail_start_pips: float = 10.0

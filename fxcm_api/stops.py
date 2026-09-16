@@ -20,6 +20,7 @@ class TradeSnap:
     open_rate: float
     stop_order_id: str | None   # None 或空串 = 尚无止损单
     current_stop: float | None = None   # 当前止损价（trade 行的 stop 字段）
+    custom_id: str = ""         # 订单 CUSTOM_ID（策略臂归因，如 quad-F1S）
 
 
 @dataclass
@@ -59,6 +60,16 @@ def side_setting(base: float, by_side: dict[str, float] | None, is_buy: bool) ->
     if not by_side:
         return base
     return float(by_side.get("buy" if is_buy else "sell", base))
+
+
+def be_trigger_for(trade: TradeSnap, base: float, by_side: dict[str, float] | None,
+                   by_custom_id: dict[str, float] | None) -> float:
+    """保本触发距离：CUSTOM_ID 精确匹配（策略臂）优先，其次按方向，最后全局。"""
+    if by_custom_id and trade.custom_id:
+        hit = by_custom_id.get(trade.custom_id)
+        if hit is not None:
+            return float(hit)
+    return side_setting(base, by_side, trade.is_buy)
 
 
 def atr_from_candles(rows, period: int = 12) -> float | None:

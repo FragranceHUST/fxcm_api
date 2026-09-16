@@ -20,8 +20,8 @@ from fxcm_api.stops import (
     OfferSnap,
     TradeSnap,
     atr_initial_sl_pips,
+    be_trigger_for,
     evaluate_trade,
-    side_setting,
 )
 from fxcm_api.trading import trade_is_buy
 
@@ -117,6 +117,7 @@ class StopManager:
                 open_rate=row.open_rate,
                 stop_order_id=stop_id or None,
                 current_stop=float(current_stop) if current_stop else None,
+                custom_id=str(getattr(row, "custom_id", "") or ""),
             )
             result.append((trade, offer, pip))
         return result
@@ -202,9 +203,10 @@ class StopManager:
                 candidate = evaluate_trade(
                     trade, offer, pip,
                     initial_sl_pips=self._initial_sl_pips(trade.symbol, pip),
-                    be_trigger_pips=side_setting(self.settings.be_trigger_pips,
-                                                 self.settings.be_trigger_pips_by_side,
-                                                 trade.is_buy),
+                    be_trigger_pips=be_trigger_for(
+                        trade, self.settings.be_trigger_pips,
+                        self.settings.be_trigger_pips_by_side,
+                        self.settings.be_trigger_pips_by_custom_id),
                     be_buffer_pips=self.settings.be_buffer_pips,
                     use_trailing=self.settings.use_trailing,
                     trail_start_pips=self.settings.trail_start_pips,
