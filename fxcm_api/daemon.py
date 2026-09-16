@@ -17,6 +17,7 @@ import asyncio
 import logging
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import uvicorn
@@ -35,6 +36,7 @@ from fxcm_api.data.store import CandleStore
 from fxcm_api.sessions import SessionManager, SessionWorker
 from fxcm_api.spread_recorder import SpreadRecorder
 from fxcm_api.stop_manager import StopManager
+from fxcm_api.stops import atr_from_candles
 from fxcm_api.trade_service import (
     TriggerManager,
     cancel_order,
@@ -337,11 +339,25 @@ def _hub_tick_provider(hub: MarketHub):
     return provider
 
 
-def _start_guard(worker: SessionWorker) -> None:
+def _make_atr_provider(hub: MarketHub) -> Callable[[str], float | None]:
+    def atr_provider(symbol: str) -> float | None:
+        # 策略口径：H4 ATR(12) 只用已收桶（剔掉聚合器最后一根未收桶）
+        bars = hub.candles(symbol, 14400, limit=14)
+        if len(bars) < 13:
+            return None
+        rows = [(b.ts, b.open, b.high, b.low, b.close) for b in bars[:-1]]
+        return atr_from_candles(rows)
+
+    return atr_provider
+
+
+def _start_guard(worker: SessionWorker, hub: MarketHub | None = None) -> None:
     if not worker.daemon_cfg.guard_enabled:
         return
+    atr_provider = _make_atr_provider(hub) if hub is not None else None
     # fx_provider：worker 重连后 guard 自动跟随新会话（静态持有旧包装器会在重连后永久失效）
-    manager = StopManager(worker.fx, worker.guard, fx_provider=lambda: worker.fx)
+    manager = StopManager(worker.fx, worker.guard, fx_provider=lambda: worker.fx,
+                          atr_provider=atr_provider)
     threading.Thread(target=manager.run_forever, name=f"guard-{worker.env}",
                      daemon=True).start()
     logger.info("[%s] guard 循环已启动 (dry_run=%s, 品种=%s)",
@@ -458,8 +474,8 @@ def main(argv: list[str] | None = None) -> int:
         store = CandleStore(Path(daemon_cfg.data_dir) / "candles.db")
         hub = MarketHub(mgr.real.fx, daemon_cfg.watch_symbols, store)
         mgr.real.on_reconnect = hub.resubscribe   # 会话重连后行情订阅随之换绑（否则行情永久停更）
-        _start_guard(mgr.demo)
-        _start_guard(mgr.real)
+        _start_guard(mgr.demo, hub)
+        _start_guard(mgr.real, hub)
 
         tm = TriggerManager(mgr, hub, store,
                             pip_overrides=mgr.demo.guard.pip_overrides)

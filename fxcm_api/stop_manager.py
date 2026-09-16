@@ -16,12 +16,19 @@ from forexconnect import ForexConnect, fxcorepy
 
 from fxcm_api.config import GuardSettings
 from fxcm_api.pips import pip_size
-from fxcm_api.stops import OfferSnap, TradeSnap, evaluate_trade
+from fxcm_api.stops import (
+    OfferSnap,
+    TradeSnap,
+    atr_initial_sl_pips,
+    evaluate_trade,
+    side_setting,
+)
 from fxcm_api.trading import trade_is_buy
 
 logger = logging.getLogger("fxcm_api.stop_manager")
 
 PENDING_WINDOW_S = 5.0
+ATR_CACHE_S = 300.0
 
 
 def _is_duplicate_stop_error(exc: Exception) -> bool:
@@ -30,10 +37,13 @@ def _is_duplicate_stop_error(exc: Exception) -> bool:
 
 
 class StopManager:
-    def __init__(self, fx: ForexConnect | None, settings: GuardSettings, fx_provider=None):
+    def __init__(self, fx: ForexConnect | None, settings: GuardSettings, fx_provider=None,
+                 atr_provider=None):
         self.fx = fx
         self.settings = settings
         self._fx_provider = fx_provider
+        self._atr_provider = atr_provider   # Callable[[str], float | None]，None = 不启用动态初始止损
+        self._atr_cache: dict[str, tuple[float, float | None]] = {}
         self.account_id: str = settings.account_id
         self._account_resolved = False
         self._seen_wrapper: object | None = None
@@ -152,6 +162,29 @@ class StopManager:
                     "BUY" if trade.is_buy else "SELL",
                     candidate_new_sl, reason, repr(response))
 
+    def _atr(self, symbol: str) -> float | None:
+        """H4 ATR(12)，进程内缓存 ATR_CACHE_S；provider 未注入或样本不足返回 None。"""
+        if self._atr_provider is None:
+            return None
+        now = time.monotonic()
+        hit = self._atr_cache.get(symbol)
+        if hit and now - hit[0] < ATR_CACHE_S:
+            return hit[1]
+        try:
+            atr = self._atr_provider(symbol)
+        except Exception:
+            logger.exception("ATR 查询 %s 失败，回落固定初始止损", symbol)
+            atr = None
+        self._atr_cache[symbol] = (now, atr)
+        return atr
+
+    def _initial_sl_pips(self, symbol: str, pip: float) -> float:
+        mult = self.settings.initial_sl_atr_mult
+        if mult <= 0:
+            return self.settings.initial_sl_pips
+        return atr_initial_sl_pips(self._atr(symbol), pip, mult,
+                                   self.settings.initial_sl_pips)
+
     def run_cycle(self) -> int:
         fx = self._current_fx()
         if fx is None:
@@ -168,8 +201,10 @@ class StopManager:
             try:
                 candidate = evaluate_trade(
                     trade, offer, pip,
-                    initial_sl_pips=self.settings.initial_sl_pips,
-                    be_trigger_pips=self.settings.be_trigger_pips,
+                    initial_sl_pips=self._initial_sl_pips(trade.symbol, pip),
+                    be_trigger_pips=side_setting(self.settings.be_trigger_pips,
+                                                 self.settings.be_trigger_pips_by_side,
+                                                 trade.is_buy),
                     be_buffer_pips=self.settings.be_buffer_pips,
                     use_trailing=self.settings.use_trailing,
                     trail_start_pips=self.settings.trail_start_pips,
@@ -199,9 +234,14 @@ class StopManager:
 
     def run_forever(self) -> None:
         interval = max(self.settings.poll_interval_ms, 100) / 1000.0
-        logger.info("止损管家启动：初始SL=%spips 保本触发=%spips 缓冲=%spips "
+        atr_txt = (f" (ATR×{self.settings.initial_sl_atr_mult:g})"
+                   if self.settings.initial_sl_atr_mult > 0 else "")
+        side_txt = (f" by_side={self.settings.be_trigger_pips_by_side}"
+                    if self.settings.be_trigger_pips_by_side else "")
+        logger.info("止损管家启动：初始SL=%spips%s 保本触发=%spips%s 缓冲=%spips "
                     "移动止损=%s 周期=%sms 品种=%s dry_run=%s",
-                    self.settings.initial_sl_pips, self.settings.be_trigger_pips,
+                    self.settings.initial_sl_pips, atr_txt,
+                    self.settings.be_trigger_pips, side_txt,
                     self.settings.be_buffer_pips,
                     "开" if self.settings.use_trailing else "关",
                     int(interval * 1000),

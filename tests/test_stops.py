@@ -6,12 +6,16 @@ import unittest
 
 from fxcm_api.stops import (
     OfferSnap,
+    StopCandidate,
     TradeSnap,
+    atr_from_candles,
+    atr_initial_sl_pips,
     breakeven_sl,
     clamp_to_market,
     evaluate_trade,
     initial_sl,
     is_better,
+    side_setting,
     trailing_sl,
 )
 
@@ -376,6 +380,107 @@ class TestGuardFollowsReconnect(unittest.TestCase):
         current["fx"] = b
         self.assertEqual(mgr.run_cycle(), 0)
         self.assertEqual(mgr.account_id, "ACC-B")
+
+
+class TestSideSetting(unittest.TestCase):
+    """per-side 覆盖：{"buy": .., "sell": ..}，未配置侧回落 base。"""
+
+    def test_none_returns_base(self):
+        self.assertEqual(side_setting(5.0, None, True), 5.0)
+        self.assertEqual(side_setting(5.0, None, False), 5.0)
+
+    def test_side_override(self):
+        by = {"buy": 10.0, "sell": 8.0}
+        self.assertEqual(side_setting(5.0, by, True), 10.0)
+        self.assertEqual(side_setting(5.0, by, False), 8.0)
+
+    def test_missing_side_falls_back(self):
+        self.assertEqual(side_setting(5.0, {"buy": 10.0}, False), 5.0)
+
+
+class TestAtrFromCandles(unittest.TestCase):
+    """ATR 口径与 vol_reversal 一致：最近 12 根已收桶 TR 均值，不含更早桶。"""
+
+    def test_uniform_tr(self):
+        atr = atr_from_candles([(i, 1.0, 1.0020, 0.9990, 1.0) for i in range(13)])
+        assert atr is not None
+        self.assertAlmostEqual(atr, 0.0030)
+
+    def test_ignores_bars_outside_window(self):
+        rows = [(0, 1.0, 1.0200, 0.9800, 1.0)]                      # 首根巨幅，应被排除
+        rows += [(i, 1.0, 1.0020, 0.9990, 1.0) for i in range(1, 13)]
+        atr = atr_from_candles(rows)
+        assert atr is not None
+        self.assertAlmostEqual(atr, 0.0030)
+
+    def test_insufficient_rows(self):
+        self.assertIsNone(atr_from_candles([(i, 1.0, 1.002, 0.999, 1.0) for i in range(12)]))
+
+
+class TestAtrInitialSlPips(unittest.TestCase):
+    def test_dynamic(self):
+        self.assertAlmostEqual(atr_initial_sl_pips(0.0030, 0.0001, 1.5, 20.0), 45.0)
+
+    def test_fallback_without_atr(self):
+        self.assertAlmostEqual(atr_initial_sl_pips(None, 0.0001, 1.5, 20.0), 20.0)
+
+    def test_fallback_when_mult_zero(self):
+        self.assertAlmostEqual(atr_initial_sl_pips(0.0030, 0.0001, 0.0, 20.0), 20.0)
+
+    def test_fallback_when_atr_zero(self):
+        self.assertAlmostEqual(atr_initial_sl_pips(0.0, 0.0001, 1.5, 20.0), 20.0)
+
+
+class TestDynamicInitialSlManager(unittest.TestCase):
+    """initial_sl_atr_mult>0：初始止损随 ATR 缩放、进程内缓存；ATR 缺失回落固定点数。"""
+
+    def test_dynamic_and_cache(self):
+        from fxcm_api.config import GuardSettings
+        from fxcm_api.stop_manager import StopManager
+
+        calls = []
+
+        def provider(symbol):
+            calls.append(symbol)
+            return 0.0030
+
+        mgr = StopManager(None, GuardSettings(initial_sl_atr_mult=1.5, initial_sl_pips=20.0),
+                          atr_provider=provider)
+        self.assertAlmostEqual(mgr._initial_sl_pips("EUR/USD", 0.0001), 45.0)
+        self.assertAlmostEqual(mgr._initial_sl_pips("EUR/USD", 0.0001), 45.0)
+        self.assertEqual(calls, ["EUR/USD"])   # 第二次命中缓存，不再查 provider
+
+    def test_fallback_when_atr_missing(self):
+        from fxcm_api.config import GuardSettings
+        from fxcm_api.stop_manager import StopManager
+
+        mgr = StopManager(None, GuardSettings(initial_sl_atr_mult=1.5, initial_sl_pips=20.0),
+                          atr_provider=lambda s: None)
+        self.assertAlmostEqual(mgr._initial_sl_pips("EUR/USD", 0.0001), 20.0)
+
+    def test_mult_zero_uses_fixed(self):
+        from fxcm_api.config import GuardSettings
+        from fxcm_api.stop_manager import StopManager
+
+        mgr = StopManager(None, GuardSettings(initial_sl_atr_mult=0.0, initial_sl_pips=20.0))
+        self.assertAlmostEqual(mgr._initial_sl_pips("EUR/USD", 0.0001), 20.0)
+
+
+class TestPerSideBeTrigger(unittest.TestCase):
+    """per-side BE 触发贯通 evaluate_trade：浮盈 9 pips 时 buy(触发10)不动、sell(触发8)推保本。"""
+
+    def test_buy_vs_sell(self):
+        by = {"buy": 10.0, "sell": 8.0}
+        buy = make_trade(open_rate=1.10000, is_buy=True, stop_order_id="S1",
+                         current_stop=1.09800)
+        sell = make_trade(open_rate=1.10000, is_buy=False, stop_order_id="S2",
+                          current_stop=1.10100)
+        offer_buy = make_offer(bid=1.10090, ask=1.10092)    # buy 浮盈 +9 pips
+        offer_sell = make_offer(bid=1.09908, ask=1.09910)   # sell 浮盈 +9 pips
+        self.assertIsNone(evaluate(buy, offer_buy, be_trigger_pips=side_setting(5.0, by, True)))
+        cand = evaluate(sell, offer_sell, be_trigger_pips=side_setting(5.0, by, False))
+        assert cand is not None
+        self.assertEqual(cand.reason, "BE")
 
 
 if __name__ == "__main__":

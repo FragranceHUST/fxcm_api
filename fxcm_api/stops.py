@@ -54,6 +54,36 @@ def trailing_sl(close_price: float, is_buy: bool, dist_pips: float, pip: float) 
     return close_price - dist_pips * pip if is_buy else close_price + dist_pips * pip
 
 
+def side_setting(base: float, by_side: dict[str, float] | None, is_buy: bool) -> float:
+    """按方向取配置：by_side 形如 {"buy": .., "sell": ..}，未配置侧回落 base。"""
+    if not by_side:
+        return base
+    return float(by_side.get("buy" if is_buy else "sell", base))
+
+
+def atr_from_candles(rows, period: int = 12) -> float | None:
+    """rows=(ts, o, h, l, c) 升序已收 K 线；返回最近 period 根 TR 均值。
+
+    与 vol_reversal 的 atr[j]=mean(TR[j-period:j]) 同口径（严格不含当前桶），
+    调用方须先剔除未收桶。样本不足返回 None。
+    """
+    if len(rows) < period + 1:
+        return None
+    trs = []
+    for i in range(len(rows) - period, len(rows)):
+        high, low, c_prev = rows[i][2], rows[i][3], rows[i - 1][4]
+        trs.append(max(high - low, abs(high - c_prev), abs(low - c_prev)))
+    return sum(trs) / period
+
+
+def atr_initial_sl_pips(atr_price: float | None, pip: float, mult: float,
+                        fallback_pips: float) -> float:
+    """动态初始止损 pips：mult>0 且 ATR 可用时 = mult×ATR/pip，否则回落固定点数。"""
+    if mult > 0 and atr_price is not None and atr_price > 0 and pip > 0:
+        return mult * atr_price / pip
+    return fallback_pips
+
+
 def is_better(new_sl: float, cur_sl: float | None, is_buy: bool,
               min_improve: float) -> bool:
     """多头止损只许上移、空头只许下移；cur_sl 为空视为可任意设置。"""

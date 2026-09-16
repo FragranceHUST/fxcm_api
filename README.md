@@ -56,7 +56,9 @@ bash scripts/patch_forexconnect_mac.sh /Library/Frameworks/Python.framework/Vers
   },
   "guard": {
     "initial_sl_pips": 20.0,         // 开仓即挂的初始止损（0=不挂）
+    "initial_sl_atr_mult": 0.0,      // >0：初始止损=倍数×ATR(H4,12)（随波动率，如 vol_reversal 用 1.5），覆盖 initial_sl_pips
     "be_trigger_pips": 50.0,         // 浮盈达该点数后推保本（XAU/USD 50 pips = 5.0 USD）
+    "be_trigger_pips_by_side": null, // {"buy": 10, "sell": 8} 按方向覆盖保本触发（null=统一值）
     "be_buffer_pips": 0.0,           // 保本位 = 开仓价 ± 该点数（0 = 精确成本价）
     "use_trailing": false,           // 移动止损（默认关）
     "trail_start_pips": 10.0, "trail_dist_pips": 8.0, "trail_step_pips": 1.0,
