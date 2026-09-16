@@ -152,6 +152,7 @@ scripts/run_daemon.sh config.demo.json config.json
 |---|---|
 | `GET /api/health` `/api/environments` `/api/quotes` `/api/candles?symbol=&tf=&limit=` | 行情与会话状态（tf: 1s/1m/15m/1h/4h/1d） |
 | `GET /api/strategy` | quad 策略 runner 状态（ATR/带/信号/臂持仓归因） |
+| `GET /api/strategy/performance` | 策略绩效（臂方向/状态、手数、盈亏、胜率、均持仓、MFE/MAE 正反向波动；不含策略参数） |
 | `GET /api/{env}/positions` `GET /api/{env}/orders` | 持仓；挂单+触发器 |
 | `POST /api/{env}/orders` | 下单（`order_type: market/limit/stop`；real 需 `confirm: true`） |
 | `POST /api/{env}/positions/{id}/close` `PATCH /api/{env}/positions/{id}/sl` | 平仓（可部分）/改损 |
