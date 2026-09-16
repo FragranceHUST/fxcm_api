@@ -82,7 +82,7 @@ bash scripts/patch_forexconnect_mac.sh /Library/Frameworks/Python.framework/Vers
 | 参数 | demo（已实测） | real |
 |---|---|---|
 | 初始止损 | 20 pips（$2.00） | 150 pips（$15.00） |
-| 保本触发 | 50 pips（$5.00） | 51 pips（$5.10） |
+| 保本触发 | 50 pips（$5.00） | 100 pips（$10.00） |
 | 保本位 | 成本价 | 成本价 + 0.1USD（1 pip 缓冲覆盖滑点） |
 
 止损策略：INIT（初始止损）→ BE（浮盈达标推保本）→ TRAIL（可选移动）。**止损只向有利方向改善，绝不放宽**；发单后 5s 在途窗口防重复下单竞态，服务端 ORA-20114 重复单降级为良性事件。
