@@ -14,7 +14,7 @@ import numpy as np
 from quant.cli import parse_iso_date
 from quant.data import OHLCV
 from quant.validate import (build_folds, neighborhood_mean_sharpe, select_plateau_center,
-                            window_valid_count)
+                            select_plateau_scored, window_valid_count)
 
 _DAY = 86400
 _MIN_TEST_SPAN = 45 * _DAY
@@ -140,6 +140,17 @@ class TestPlateauSelection(unittest.TestCase):
         sel = select_plateau_center(sharpe, trades_ok)
         self.assertEqual(sel, (1, 0))
 
+    def test_scored_matches_center_with_score(self):
+        # 得分版选参与 center 版一致，并返回该格的邻域均值 sharpe
+        sharpe = np.zeros((11, 11))
+        sharpe[6:11, 6:11] = 2.0
+        trades_ok = np.ones_like(sharpe, dtype=bool)
+        scored = select_plateau_scored(sharpe, trades_ok)
+        assert scored is not None
+        score, i, j = scored
+        self.assertEqual((i, j), select_plateau_center(sharpe, trades_ok))
+        self.assertAlmostEqual(score, 2.0)
+
     def test_tie_break_first_in_row_major_order(self):
         # 两块等值 5×5 高原 → 首个合格中心；角落格窗口仅 9/12 有效格 < 13 被排除 → (0,2)
         sharpe = np.zeros((11, 11))
@@ -198,6 +209,74 @@ class TestPlateauSelection(unittest.TestCase):
             for p_str, cnt in payload["param_distribution"].items():
                 self.assertEqual(cnt, sum(1 for f in payload["folds"]
                                           if f["chosen_param1"] == float(p_str)))
+
+
+def _write_synth_db(db_path: str, months: int, start: str, seed: int = 42) -> None:
+    """随机游走 m1 合成库（与既有冒烟同口径）。"""
+    from fxcm_api.data.store import CandleStore
+    ohlcv = synth_m1_years(months, start, seed)
+    store = CandleStore(db_path)
+    rows = [(int(ohlcv.ts[i]), float(ohlcv.open[i]), float(ohlcv.high[i]),
+             float(ohlcv.low[i]), float(ohlcv.close[i]), 1)
+            for i in range(len(ohlcv.ts))]
+    store.upsert_bid_candles("USD/JPY", 60, rows)
+    store.close()
+
+
+class TestWfaParam3(unittest.TestCase):
+    """param3 第三维：切片内 5×5 选参、跨切片取邻域得分最高；行/分布/meta 完整。"""
+
+    def _run_wfa(self, tmp: str, **overrides):
+        if not _VOL_REVERSAL.exists():
+            self.skipTest("strategies/vol_reversal.py 不存在（不入库）")
+        spec = importlib.util.spec_from_file_location("wfa_p3_strategy", _VOL_REVERSAL)
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["wfa_p3_strategy"] = mod
+        spec.loader.exec_module(mod)
+        _write_synth_db(f"{tmp}/candles.db", 30, "2020-01-01")
+        base = dict(db=f"{tmp}/candles.db", strategy=str(_VOL_REVERSAL), symbol="USD/JPY",
+                    start="2020-01-01", end="2022-12-25", direction="long",
+                    quantity=50000, capital=5000.0, spread_rt=0.01,
+                    cost_levels="1", train_months=24, test_months=6,
+                    param1_start=0.2, param1_stop=0.8, param1_step=0.6,
+                    param2_name=None, param2_start=None, param2_stop=None,
+                    param2_step=None, min_train_trades=5, warmup_days=20,
+                    out=f"{tmp}/results", label="p3", xlsx=None, sparam=[],
+                    workers=1, oos_topk=1)
+        base.update(overrides)
+        from argparse import Namespace
+        args = Namespace(**base)
+        from quant.validate import cmd_wfa
+        self.assertEqual(cmd_wfa(args), 0)
+        return json.loads(
+            Path(f"{args.out}/USD_JPY_2020-01-01_2022-12-25_wfa_p3.json").read_text())
+
+    def test_param3_slice_selection_and_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._run_wfa(
+                tmp, param3_name="sl_atr_mult", param3_start=0.3,
+                param3_stop=0.9, param3_step=0.3)
+            grid3 = {0.3, 0.6, 0.9}
+            for fold in payload["folds"]:
+                self.assertTrue(fold["chosen_param3"] is None
+                                or fold["chosen_param3"] in grid3)
+                self.assertIn("chosen_param3", fold)
+            meta = payload["meta"]
+            self.assertEqual(meta["param3_name"], "sl_atr_mult")
+            self.assertEqual(meta["grid3_size"], 3)
+            self.assertIn("param3 逐切片", meta["selection_rule"])
+            for key in payload["param_distribution"]:
+                self.assertEqual(len(key.split("|")), 3)
+
+    def test_no_param3_backward_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            payload = self._run_wfa(tmp)
+            self.assertIsNone(payload["meta"]["param3_name"])
+            for fold in payload["folds"]:
+                self.assertIsNone(fold["chosen_param3"])
+            for key in payload["param_distribution"]:
+                self.assertEqual(len(key.split("|")), 1)
 
 
 if __name__ == "__main__":

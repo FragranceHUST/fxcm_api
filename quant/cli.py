@@ -223,6 +223,12 @@ def main(argv: list[str] | None = None) -> int:
     wf.add_argument("--param2-start", type=float, default=None)
     wf.add_argument("--param2-stop", type=float, default=None)
     wf.add_argument("--param2-step", type=float, default=None)
+    wf.add_argument("--param3-name", default=None,
+                    help="第三维参数名（如 sl_atr_mult）；缺省=不启用。"
+                         "选参：逐切片跑 5×5 邻域规则，跨切片取邻域得分最高（平票按 p3 升序）")
+    wf.add_argument("--param3-start", type=float, default=None)
+    wf.add_argument("--param3-stop", type=float, default=None)
+    wf.add_argument("--param3-step", type=float, default=None)
     wf.add_argument("--workers", type=int, default=0,
                     help="并行 worker 进程数（0=自动 cpu-1，1=串行确定性路径）")
     wf.add_argument("--min-train-trades", type=int, default=30,

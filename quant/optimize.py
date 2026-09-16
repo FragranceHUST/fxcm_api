@@ -189,12 +189,15 @@ def init_backtest_worker(init: dict[str, Any]) -> None:
     _WORKER["build"] = load_strategy_class(init["strategy_path"])
 
 
-def _strategy_params(p1: float, p2: float | None) -> dict[str, Any]:
+def _strategy_params(p1: float, p2: float | None, p3: float | None = None) -> dict[str, Any]:
     params: dict[str, Any] = {"param1": float(p1)}
     params.update(_WORKER.get("extra_params") or {})
     name = _WORKER.get("param2_name")
     if name and p2 is not None:
         params[str(name)] = float(p2)
+    name3 = _WORKER.get("param3_name")
+    if name3 and p3 is not None:
+        params[str(name3)] = float(p3)
     return params
 
 
@@ -211,17 +214,17 @@ def sweep_worker(task: tuple[float, float | None, float]) -> dict:
                 years=_WORKER["years"])
 
 
-def wfa_worker(task: tuple[int, float, float | None, int, int, float]
-               ) -> tuple[int, float, float | None, dict]:
-    """(fold_id, p1, p2, train_start, train_end, cost_mult) → 折内 train 段统计（不含 Trade 列表）。"""
-    fold_id, p1, p2, train_start, train_end, mult = task
-    strategy = _WORKER["build"](params=_strategy_params(p1, p2), symbol=_WORKER["symbol"],
+def wfa_worker(task: tuple[int, float, float | None, float | None, int, int, float]
+               ) -> tuple[int, float, float | None, float | None, dict]:
+    """(fold_id, p1, p2, p3, train_start, train_end, cost_mult) → 折内 train 段统计（不含 Trade 列表）。"""
+    fold_id, p1, p2, p3, train_start, train_end, mult = task
+    strategy = _WORKER["build"](params=_strategy_params(p1, p2, p3), symbol=_WORKER["symbol"],
                                 direction_mode=_WORKER["direction"],
                                 quantity=_WORKER["quantity"],
                                 total_capital=_WORKER["capital"],
                                 cost_model=CostModel(spread_rt=_WORKER["spread_rt"] * mult))
     result = strategy.run_backtest(_WORKER["feed"], train_start, train_end)
-    return fold_id, p1, p2, result.stats
+    return fold_id, p1, p2, p3, result.stats
 
 
 def run_backtest_tasks(tasks: list, init: dict[str, Any], worker: Callable,

@@ -136,6 +136,20 @@ def select_plateau_center(sharpe: np.ndarray, trades_ok: np.ndarray,
     return top[0] if top else None
 
 
+def select_plateau_scored(sharpe: np.ndarray, trades_ok: np.ndarray,
+                          min_window_valid: int = PLATEAU_MIN_WINDOW_VALID,
+                          radius: int = PLATEAU_RADIUS) -> tuple[float, int, int] | None:
+    """选参并返回其邻域得分（param3 逐切片比较用）；返回 (nm_score, i, j) 或 None。"""
+    scores = _plateau_scores(sharpe, trades_ok, min_window_valid, radius)
+    if scores is None:
+        return None
+    flat = scores.ravel()
+    for f in np.argsort(-flat, kind="stable"):
+        if np.isfinite(flat[f]):
+            return float(flat[f]), int(f) // sharpe.shape[1], int(f) % sharpe.shape[1]
+    return None
+
+
 def _fold_matrix(cands: list[tuple[float, float | None, dict]], grid1: np.ndarray,
                  grid2: list[float | None],
                  min_train_trades: int) -> tuple[np.ndarray, np.ndarray]:
@@ -156,7 +170,8 @@ def _fold_matrix(cands: list[tuple[float, float | None, dict]], grid1: np.ndarra
 def _fold_row(fold_id: int, window: tuple[int, int, int, int],
               chosen_param1: float | None, chosen_param2: float | None,
               is_stats: dict | None, oos_stats: dict | None, oos_trades: list[Trade],
-              capital: float, oos_topk: str | None = None) -> dict:
+              capital: float, oos_topk: str | None = None,
+              chosen_param3: float | None = None) -> dict:
     train_start, train_end, test_start, test_end = window
     row: dict = {
         "fold_id": fold_id,
@@ -166,6 +181,7 @@ def _fold_row(fold_id: int, window: tuple[int, int, int, int],
         "test_end": _iso_date(test_end),
         "chosen_param1": chosen_param1,
         "chosen_param2": chosen_param2,
+        "chosen_param3": chosen_param3,
         "oos_topk": oos_topk,
     }
     if chosen_param1 is None or is_stats is None:
@@ -203,6 +219,13 @@ def cmd_wfa(args) -> int:
     extra_params: dict[str, Any] = parse_params(args.sparam)
     if param2_name and param2_name in extra_params:
         raise SystemExit(f"--sparam 与 --param2-name 冲突：{param2_name}")
+    param3_name = getattr(args, "param3_name", None)
+    if param3_name and None in (getattr(args, "param3_start", None),
+                                getattr(args, "param3_stop", None),
+                                getattr(args, "param3_step", None)):
+        raise SystemExit("--param3-name 需要同时给出 --param3-start/stop/step")
+    if param3_name and param3_name in extra_params:
+        raise SystemExit(f"--sparam 与 --param3-name 冲突：{param3_name}")
     start_ts = parse_iso_date(args.start)
     end_ts = parse_iso_date(args.end) - 1          # end 排他：截至前一日最后一根 m1
     folds = build_folds(start_ts, parse_iso_date(args.end),
@@ -219,28 +242,34 @@ def cmd_wfa(args) -> int:
     grid2: list[float | None] = ([float(p) for p in build_grid(
         getattr(args, "param2_start"), getattr(args, "param2_stop"),
         getattr(args, "param2_step"))] if param2_name else [None])
+    grid3: list[float | None] = ([float(p) for p in build_grid(
+        getattr(args, "param3_start"), getattr(args, "param3_stop"),
+        getattr(args, "param3_step"))] if param3_name else [None])
     cost_mult = float(str(args.cost_levels).split(",")[0])
     oos_topk = max(1, getattr(args, "oos_topk", 1))
     workers = workers_arg if workers_arg > 0 else default_workers()
 
     # 全折 × 全网格的 train run 一次性并行（折间独立）；OOS 在主进程串行
     tasks = [(fold_id, float(p1), float(p2) if p2 is not None else None,
+              float(p3) if p3 is not None else None,
               train_start, train_end - 1, cost_mult)
              for fold_id, (train_start, train_end, _, _) in enumerate(folds)
-             for p1 in grid1 for p2 in grid2]
+             for p1 in grid1 for p2 in grid2 for p3 in grid3]
     init = {"db_path": db_path, "strategy_path": args.strategy, "symbol": args.symbol,
             "direction": args.direction, "quantity": args.quantity, "capital": args.capital,
             "spread_rt": args.spread_rt, "cache_start_ts": cache_start,
             "start_ts": start_ts, "end_ts": end_ts, "param2_name": param2_name,
+            "param3_name": param3_name,
             "years": None, "extra_params": extra_params}
-    print(f"{len(folds)} 折 × 网格 {len(grid1)}×{len(grid2)} = {len(tasks)} train run，"
-          f"workers={workers}")
+    grid3_txt = f"×{len(grid3)}" if param3_name else ""
+    print(f"{len(folds)} 折 × 网格 {len(grid1)}×{len(grid2)}{grid3_txt} = "
+          f"{len(tasks)} train run，workers={workers}")
     t0 = time.perf_counter()
     results = run_backtest_tasks(tasks, init, wfa_worker, workers,
                                  progress_every=max(1, len(tasks) // 50))
-    by_fold: dict[int, list[tuple[float, float | None, dict]]] = {}
-    for fold_id, p1, p2, stats in results:
-        by_fold.setdefault(fold_id, []).append((p1, p2, stats))
+    by_fold: dict[int, list[tuple[float, float | None, float | None, dict]]] = {}
+    for fold_id, p1, p2, p3, stats in results:
+        by_fold.setdefault(fold_id, []).append((p1, p2, p3, stats))
 
     feed = DataFeed(db_path)
     ohlcv = feed.load(args.symbol, 60, cache_start, end_ts)
@@ -251,23 +280,35 @@ def cmd_wfa(args) -> int:
 
     fold_rows: list[dict] = []
     oos_trades: list[Trade] = []
-    param_count: dict[tuple[float, float | None], int] = {}
+    param_count: dict[tuple[float, float | None, float | None], int] = {}
     for fold_id, window in enumerate(folds):
         train_start, train_end, test_start, test_end = window
         cands = by_fold.get(fold_id, [])
-        sharpe_mat, trades_ok = _fold_matrix(cands, grid1, grid2, args.min_train_trades)
-        top = select_plateau_topk(sharpe_mat, trades_ok, oos_topk)
-        if not top:
+        best: tuple[float, float | None, int, int] | None = None   # (邻域得分, p3, i, j)
+        slice_mats: dict[float | None, tuple[np.ndarray, np.ndarray]] = {}
+        for p3 in grid3:
+            slice_cands = [(p1, p2, s) for (p1, p2, p3v, s) in cands if p3v == p3]
+            sharpe_mat, trades_ok = _fold_matrix(slice_cands, grid1, grid2,
+                                                 args.min_train_trades)
+            slice_mats[p3] = (sharpe_mat, trades_ok)
+            scored = select_plateau_scored(sharpe_mat, trades_ok)
+            if scored is not None and (best is None or scored[0] > best[0]):
+                best = (scored[0], p3, scored[1], scored[2])
+        if best is None:
             fold_rows.append(_fold_row(fold_id, window, None, None, None, None, [],
                                        args.capital))
             print(f"fold {fold_id} train {_iso_date(train_start)}→{_iso_date(train_end)} "
                   f"test {_iso_date(test_start)}→{_iso_date(test_end)}: "
                   f"无合格参数（train 平仓 < {args.min_train_trades}），跳过 OOS")
             continue
+        best_p3 = best[1]
+        sharpe_mat, trades_ok = slice_mats[best_p3]
+        top = select_plateau_topk(sharpe_mat, trades_ok, oos_topk)
         i, j = top[0]
         best_p = float(grid1[i])
         best_p2 = grid2[j] if param2_name else None
-        is_stats = next(s for (p1, p2, s) in cands if p1 == best_p and p2 == best_p2)
+        is_stats = next(s for (p1, p2, p3v, s) in cands
+                        if p1 == best_p and p2 == best_p2 and p3v == best_p3)
         oos_res_trades: list[Trade] = []
         for ci, cj in top:
             cp1 = float(grid1[ci])
@@ -275,6 +316,8 @@ def cmd_wfa(args) -> int:
             params: dict[str, Any] = {"param1": cp1, **extra_params}
             if param2_name and cp2 is not None:
                 params[param2_name] = float(cp2)
+            if param3_name and best_p3 is not None:
+                params[param3_name] = float(best_p3)
             strategy = build(params=params, symbol=args.symbol,
                              direction_mode=args.direction,
                              quantity=args.quantity, total_capital=args.capital,
@@ -282,19 +325,22 @@ def cmd_wfa(args) -> int:
             oos_res_trades.extend(strategy.run_backtest(preloaded, test_start, test_end - 1).trades)
         oos_stats = StrategyBase.calc_cost_function(oos_res_trades)
         oos_trades.extend(oos_res_trades)
-        param_count[(best_p, best_p2)] = param_count.get((best_p, best_p2), 0) + 1
+        param_count[(best_p, best_p2, best_p3)] = \
+            param_count.get((best_p, best_p2, best_p3), 0) + 1
         k_used = len(top)
         topk_txt = ";".join(
             f"{float(grid1[ci]):.2f}|{(f'{grid2[cj]:.2f}' if grid2[cj] is not None else 'const')}"
             for ci, cj in top)
         fold_rows.append(_fold_row(fold_id, window, best_p, best_p2, is_stats,
                                    oos_stats, oos_res_trades, args.capital,
-                                   topk_txt if oos_topk > 1 else None))
+                                   topk_txt if oos_topk > 1 else None,
+                                   chosen_param3=best_p3))
         p2_txt = f" p2={best_p2:.2f}" if best_p2 is not None else ""
+        p3_txt = f" p3={best_p3:.1f}" if param3_name else ""
         tk_txt = f" top{k_used}: {topk_txt} " if oos_topk > 1 else " "
         print(f"fold {fold_id} train {_iso_date(train_start)}→{_iso_date(train_end)} "
               f"test {_iso_date(test_start)}→{_iso_date(test_end)}: "
-              f"chosen p1={best_p:.2f}{p2_txt} "
+              f"chosen p1={best_p:.2f}{p2_txt}{p3_txt} "
               f"is_sharpe={is_stats['sharpe_ratio']:.2f} "
               f"oos_sharpe={oos_stats['sharpe_ratio']:.2f} "
               f"oos_pnl=${oos_stats['total_pnl']:.2f} "
@@ -310,11 +356,15 @@ def cmd_wfa(args) -> int:
     print(f"  winrate={agg['winrate'] * 100:.1f}% pnl=${agg['total_pnl']:.2f} "
           f"ret%={agg['return_pct']:.2f} sharpe={agg['sharpe_ratio']:.2f} "
           f"maxDD=${agg['max_drawdown']:.2f} pf={agg['profit_factor']:.2f}")
-    if param2_name:
+    if param3_name:
+        dist = {f"{p1:.2f}|{(f'{p2:.2f}' if p2 is not None else 'const')}"
+                f"|{(f'{p3:.1f}' if p3 is not None else 'const')}": c
+                for (p1, p2, p3), c in sorted(param_count.items())}
+    elif param2_name:
         dist = {f"{p1:.2f}|{(f'{p2:.2f}' if p2 is not None else 'const')}": c
-                for (p1, p2), c in sorted(param_count.items())}
+                for (p1, p2, _), c in sorted(param_count.items())}
     else:
-        dist = {f"{p1:.2f}": c for (p1, _), c in sorted(param_count.items())}
+        dist = {f"{p1:.2f}": c for (p1, _, _), c in sorted(param_count.items())}
     print(f"参数分布: {dist or '（无折选出参数）'}")
     elapsed = time.perf_counter() - t0
 
@@ -337,11 +387,18 @@ def cmd_wfa(args) -> int:
             "param2_stop": getattr(args, "param2_stop", None),
             "param2_step": getattr(args, "param2_step", None),
             "grid2_size": len(grid2) if param2_name else None,
+            "param3_name": param3_name,
+            "param3_start": getattr(args, "param3_start", None),
+            "param3_stop": getattr(args, "param3_stop", None),
+            "param3_step": getattr(args, "param3_step", None),
+            "grid3_size": len(grid3) if param3_name else None,
             "selection_rule": (f"5x5 邻域均值 sharpe 前 {oos_topk} 名分别跑 OOS 等权拼接"
                                f"（仅折内 train 数据；平票按 p1、p2 升序）"
                                if oos_topk > 1 else
                                "5x5 邻域均值 sharpe 最大格中心（仅折内 train 数据；"
-                               "平票按 p1、p2 升序）"),
+                               "平票按 p1、p2 升序）")
+            + ("；param3 逐切片 5×5 选参后跨切片取邻域得分最高（平票按 p3 升序）"
+               if param3_name else ""),
             "oos_topk": oos_topk,
             "cost_mult": cost_mult, "spread_rt": args.spread_rt,
             "quantity": args.quantity, "capital": args.capital,

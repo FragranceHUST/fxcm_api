@@ -234,3 +234,40 @@ class TestBandNaNIdle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExcursions(unittest.TestCase):
+    """mfe/mae 语义钉死：持有期内相对入场价的最大有利/不利偏移（价格单位，含入场 bar）。"""
+
+    def test_sl_loser_mfe_mae(self):
+        # bar1 穿回带内开多@100（tp=+0.10, sl=-0.04）；bar2 冲高 100.05（mfe）回落 99.99；
+        # bar3 探 99.95 击穿 SL@99.96 → mfe=0.05, mae=0.05（含入场 bar 的 h/l）
+        bars = [(0, 99.95, 99.97, 99.90, 99.90),
+                (1, 99.98, 100.02, 99.97, 100.05),   # prev_c=99.90<100, c=100.05 → 开多@100
+                (2, 100.03, 100.05, 99.99, 100.00),
+                (3, 99.97, 99.99, 99.95, 99.95)]     # l=99.95 ≤ sl=99.96 → SL
+        trades = run(make_data(bars), *flat_bands(4, 110.0, 100.0),
+                     tp_dist=np.full(4, 0.10), sl_dist=np.full(4, 0.04),
+                     instrument="EUR/USD", direction_mode=1,
+                     cost_per_trade=0.0, quantity=50000)
+        self.assertEqual(len(trades), 1)
+        t = trades[0]
+        self.assertEqual(t.exit_reason, "sl")
+        self.assertAlmostEqual(t.mfe, 0.05, places=9)
+        self.assertAlmostEqual(t.mae, 0.05, places=9)
+
+    def test_tp_winner_with_adverse_dip(self):
+        # 开多@100 后 bar2 探 99.97（mae=0.03）未触 SL，bar3 冲 100.15 触 TP@100.10
+        bars = [(0, 99.95, 99.97, 99.90, 99.90),
+                (1, 99.98, 100.02, 99.97, 100.05),
+                (2, 100.03, 100.05, 99.97, 100.00),
+                (3, 100.05, 100.15, 100.00, 100.12)]
+        trades = run(make_data(bars), *flat_bands(4, 110.0, 100.0),
+                     tp_dist=np.full(4, 0.10), sl_dist=np.full(4, 0.04),
+                     instrument="EUR/USD", direction_mode=1,
+                     cost_per_trade=0.0, quantity=50000)
+        self.assertEqual(len(trades), 1)
+        t = trades[0]
+        self.assertEqual(t.exit_reason, "tp")
+        self.assertAlmostEqual(t.mfe, 0.15, places=9)
+        self.assertAlmostEqual(t.mae, 0.03, places=9)
