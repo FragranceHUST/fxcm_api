@@ -81,10 +81,12 @@ def market_open(fx, env: str, symbol: str, is_buy: bool, amount: int,
                 range_pips: float | None = None, sl_pips: float | None = None,
                 tp_pips: float | None = None, pip_overrides: dict | None = None,
                 store=None, sl_price: float | None = None,
-                tp_price: float | None = None) -> dict:
+                tp_price: float | None = None,
+                custom_id: str | None = None) -> dict:
     """市价开仓（可选 range/附带止损/止盈），等待成交并记录订单日志。
 
-    sl_price/tp_price 为绝对价格（优先于 *_pips 偏移语义）。"""
+    sl_price/tp_price 为绝对价格（优先于 *_pips 偏移语义）。
+    custom_id 写入订单 CUSTOM_ID 列（策略持仓归因，TRADES 行可读回）。"""
     offer = find_offer(fx, symbol)
     account = resolve_account(fx)
     pip = _pip(fx, symbol, pip_overrides)
@@ -94,6 +96,8 @@ def market_open(fx, env: str, symbol: str, is_buy: bool, amount: int,
         "BUY_SELL": fxcorepy.Constants.BUY if is_buy else fxcorepy.Constants.SELL,
         "SYMBOL": symbol, "RATE": rate,
     }
+    if custom_id:
+        kwargs["CUSTOM_ID"] = custom_id
     if range_pips and range_pips > 0:
         kwargs["ORDER_TYPE"] = fxcorepy.Constants.Orders.MARKET_OPEN_RANGE
         kwargs["RATE_MIN"] = round(rate - range_pips * pip, 10)

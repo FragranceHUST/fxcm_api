@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from forexconnect import ForexConnect
 
 from fxcm_api.candles import TF_LABELS
-from fxcm_api.config import DaemonSettings, load_daemon_settings
+from fxcm_api.config import DaemonSettings, load_daemon_settings, load_strategy_settings
 from fxcm_api.data import backfill as backfill_module
 from fxcm_api.data.backfill import TF_SECONDS
 from fxcm_api.data.hub import MarketHub
@@ -37,6 +37,7 @@ from fxcm_api.sessions import SessionManager, SessionWorker
 from fxcm_api.spread_recorder import SpreadRecorder
 from fxcm_api.stop_manager import StopManager
 from fxcm_api.stops import atr_from_candles
+from fxcm_api.strategy_runner import StrategyRunner
 from fxcm_api.trade_service import (
     TriggerManager,
     cancel_order,
@@ -88,13 +89,18 @@ def _positions_snapshot(fx) -> list[dict]:
 
 
 def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
-              daemon_cfg: DaemonSettings, tm: TriggerManager) -> FastAPI:
+              daemon_cfg: DaemonSettings, tm: TriggerManager,
+              runner: StrategyRunner | None = None) -> FastAPI:
     app = FastAPI(title="FXCM Watch Daemon", docs_url=None, redoc_url=None)
 
     @app.get("/api/health")
     def health():
         return {"status": "OK", "symbols": hub.symbols,
                 "environments": mgr.status(), "ts": time.time()}
+
+    @app.get("/api/strategy")
+    def strategy():
+        return runner.status() if runner is not None else {"enabled": False}
 
     @app.get("/api/environments")
     def environments():
@@ -470,12 +476,27 @@ def main(argv: list[str] | None = None) -> int:
     hub = None
     store = None
     tm = None
+    runner = None
     try:
         store = CandleStore(Path(daemon_cfg.data_dir) / "candles.db")
         hub = MarketHub(mgr.real.fx, daemon_cfg.watch_symbols, store)
         mgr.real.on_reconnect = hub.resubscribe   # 会话重连后行情订阅随之换绑（否则行情永久停更）
         _start_guard(mgr.demo, hub)
         _start_guard(mgr.real, hub)
+
+        strategy_cfg = load_strategy_settings(args.config)
+        if strategy_cfg.enabled and strategy_cfg.arms:
+            if mgr.demo.guard.be_trigger_pips_by_custom_id is None:
+                # strategy.arms 是保本触发的单一事实源，此处注入 guard 免双处配置漂移
+                mgr.demo.guard.be_trigger_pips_by_custom_id = {
+                    strategy_cfg.arm_custom_id(a): a.be_pips for a in strategy_cfg.arms
+                }
+            runner = StrategyRunner(mgr, hub, store, strategy_cfg,
+                                    pip_overrides=mgr.demo.guard.pip_overrides)
+            threading.Thread(target=runner.run_forever, name="strategy-quad",
+                             daemon=True).start()
+        elif strategy_cfg.enabled:
+            logger.warning("strategy.enabled=true 但 arms 为空，策略未启动")
 
         tm = TriggerManager(mgr, hub, store,
                             pip_overrides=mgr.demo.guard.pip_overrides)
@@ -496,11 +517,13 @@ def main(argv: list[str] | None = None) -> int:
                                    daemon_cfg.startup_backfill_days),
                              name="startup-backfill", daemon=True).start()
 
-        app = build_app(hub, mgr, store, daemon_cfg, tm)
+        app = build_app(hub, mgr, store, daemon_cfg, tm, runner=runner)
         logger.info("Web 服务: http://%s:%d/", args.host, port)
         uvicorn.run(app, host=args.host, port=port, log_level="warning")
         return 0
     finally:
+        if runner is not None:
+            runner.stop()
         if tm is not None:
             tm.stop()
         if hub is not None:

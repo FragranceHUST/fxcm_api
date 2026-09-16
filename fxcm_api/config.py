@@ -81,3 +81,46 @@ def load_daemon_settings(path: str | None = None) -> DaemonSettings:
         kwargs = {k: v for k, v in raw.get("daemon", {}).items() if k in known}
         return DaemonSettings(**kwargs)
     return DaemonSettings()
+
+
+@dataclass
+class ArmConfig:
+    """quad 策略单臂：固定方向 + 入场阈值 + 波动率出场 + 保本触发。"""
+    name: str
+    direction: str          # long / short
+    param1: float           # 带宽 = ATR × param1（入场阈值）
+    tp_atr_mult: float      # TP 距离 = ATR × 该倍数（入场锁定）
+    be_pips: float          # 浮盈达该点数 → guard 推保本
+
+
+@dataclass
+class StrategySettings:
+    """vol_reversal 四臂实盘 runner 配置（live 语义与 quant 引擎对齐）。"""
+    enabled: bool = False
+    symbol: str = "EUR/USD"
+    env: str = "demo"                 # 在哪个环境交易
+    quantity: int = 150000            # 每臂数量（150,000 = 1.5 标准手）
+    sl_atr_mult: float = 1.5          # SL 距离 = ATR × 该倍数（入场锁定）
+    atr_period: int = 12
+    poll_interval_s: float = 2.0      # m1 收线检测轮询周期
+    dry_run: bool = True              # True = 只记录信号不发单
+    custom_id_prefix: str = "quad"    # 持仓归因前缀：{prefix}-{arm.name}
+    arms: list[ArmConfig] = field(default_factory=list)
+
+    def arm_custom_id(self, arm: ArmConfig) -> str:
+        return f"{self.custom_id_prefix}-{arm.name}"
+
+
+def load_strategy_settings(path: str | None = None) -> StrategySettings:
+    if path and os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            raw: dict[str, Any] = json.load(f)
+        cfg = raw.get("strategy")
+        if not isinstance(cfg, dict):
+            return StrategySettings()
+        known = {f.name for f in fields(StrategySettings)}
+        kwargs = {k: v for k, v in cfg.items() if k in known}
+        arms = [ArmConfig(**a) for a in cfg.get("arms", []) if isinstance(a, dict)]
+        kwargs["arms"] = arms
+        return StrategySettings(**kwargs)
+    return StrategySettings()
