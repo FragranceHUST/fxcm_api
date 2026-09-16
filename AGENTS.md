@@ -25,6 +25,8 @@ fxcm_api — FXCM 交易账户的动态止损管家与盯盘服务（MT4 EA + Fo
 - `ORA-20114`（同订单组同类型订单）= 服务器已有止损单（表格刷新延迟），StopManager 已按良性事件处理 + 5 秒在途窗口防重发——不要改回 ERROR 级日志。
 - 止损规则：**只向有利方向改善，绝不放宽**；`min_stop_distance_pips` 距市价钳制；XAU/USD 的 pip = 0.1（`pip_overrides`）。
 - 品种名含 `/`（如 `EUR/USD`）：HTTP API 里品种走 **query 参数**（路径参数会被 Starlette 解码后路由失败）；CSV 文件名把 `/` 换成 `_`。
+- **OFFERS `pip_size` 可能错 10×**（本 demo EUR/USD 解析出 0.001，真实 pip 0.0001）：凡 pip 计量的 guard 距离（BE 触发/min_stop）必须用 `pip_overrides` 显式钉死；价格空间计算（ATR/带/TP/SL）不受影响。
+- 本地 candles 库的 **4h 表混有服务器原生桶对齐**（回填产物，非 epoch 对齐）：策略 ATR 一律从 m1 重采样（`fxcm_api/strategy_runner.py: resample_h4`），勿直接读 4h 表。
 - 官方 API 细节优先查本地 `docs/forexconnect_api_reference.md`（经源码核验）与 `scripts/dump_api_reference.py` 内省工具。
 
 ## LSP 误报（已用源码证据验证，勿"修复"）

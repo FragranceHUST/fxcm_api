@@ -59,6 +59,7 @@ bash scripts/patch_forexconnect_mac.sh /Library/Frameworks/Python.framework/Vers
     "initial_sl_atr_mult": 0.0,      // >0：初始止损=倍数×ATR(H4,12)（随波动率，如 vol_reversal 用 1.5），覆盖 initial_sl_pips
     "be_trigger_pips": 50.0,         // 浮盈达该点数后推保本（XAU/USD 50 pips = 5.0 USD）
     "be_trigger_pips_by_side": null, // {"buy": 10, "sell": 8} 按方向覆盖保本触发（null=统一值）
+    "be_trigger_pips_by_custom_id": null, // {"quad-F1S": 8} 按持仓 CUSTOM_ID 覆盖（策略臂，优先于方向）
     "be_buffer_pips": 0.0,           // 保本位 = 开仓价 ± 该点数（0 = 精确成本价）
     "use_trailing": false,           // 移动止损（默认关）
     "trail_start_pips": 10.0, "trail_dist_pips": 8.0, "trail_step_pips": 1.0,
@@ -66,8 +67,23 @@ bash scripts/patch_forexconnect_mac.sh /Library/Frameworks/Python.framework/Vers
     "poll_interval_ms": 500,         // 轮询周期
     "dry_run": true,                 // true=只打印动作不发请求（观察模式）
     "symbol_filter": null,           // null=全品种；如 ["XAU/USD"]
-    "pip_overrides": { "XAU/USD": 0.1 },   // 金属类 pip 定义
+    "pip_overrides": { "XAU/USD": 0.1, "EUR/USD": 0.0001 },   // pip 定义覆盖：金属 0.1；EUR/USD 部分 demo offer 的 pip_size 误报 10×，显式钉死
     "account_id": ""                 // 空=自动取账户表第一行
+  },
+  "strategy": {                      // quad 策略 runner（无此键 = 不启动）
+    "enabled": true,
+    "symbol": "EUR/USD",
+    "env": "demo",
+    "quantity": 150000,              // 每臂数量（150000 = 1.5 标准手）
+    "sl_atr_mult": 1.5,              // 初始止损 = ×ATR(H4,12 已收桶)，入场锁定
+    "atr_period": 12,
+    "poll_interval_s": 2.0,
+    "dry_run": true,                 // true=只记录信号不发单（观察模式）
+    "custom_id_prefix": "quad",
+    "arms": [                        // 每臂固定方向；be_pips 自动注入 guard 按臂保本
+      { "name": "F3L", "direction": "long",  "param1": 0.35, "tp_atr_mult": 1.3, "be_pips": 10 },
+      { "name": "F1S", "direction": "short", "param1": 0.85, "tp_atr_mult": 1.3, "be_pips": 8 }
+    ]
   },
   "daemon": {
     "watch_symbols": ["XAU/USD", "USD/JPY", "EUR/USD"],
@@ -135,6 +151,7 @@ scripts/run_daemon.sh config.demo.json config.json
 | 端点 | 说明 |
 |---|---|
 | `GET /api/health` `/api/environments` `/api/quotes` `/api/candles?symbol=&tf=&limit=` | 行情与会话状态（tf: 1s/1m/15m/1h/4h/1d） |
+| `GET /api/strategy` | quad 策略 runner 状态（ATR/带/信号/臂持仓归因） |
 | `GET /api/{env}/positions` `GET /api/{env}/orders` | 持仓；挂单+触发器 |
 | `POST /api/{env}/orders` | 下单（`order_type: market/limit/stop`；real 需 `confirm: true`） |
 | `POST /api/{env}/positions/{id}/close` `PATCH /api/{env}/positions/{id}/sl` | 平仓（可部分）/改损 |
@@ -180,3 +197,5 @@ PYTHONPATH=. .venv/bin/python -m unittest discover -s tests   # 100 例离线单
 - FXCM 对频繁登录有节流（Wait timeout）——交易操作请走 daemon（CLI 会自动代理），不要反复直连
 - daemon 需在仓库根目录启动；`static/`、`data/`、`History/` 按相对路径解析
 - 服务端仅保留近期已平仓交易，长期交易历史靠本地 `order_journal` 从上线起累积
+- 部分账户的 OFFERS `pip_size` 错报 10×（demo EUR/USD 解析出 0.001，真实 pip 0.0001）：凡 pip 计量的距离（BE 触发、min_stop）必须用 `pip_overrides` 显式钉死；价格空间计算（ATR/带/TP/SL）不受影响
+- 本地库 4h 表混有服务器原生桶对齐（回填产物），策略 ATR 一律从 m1 重采样（`strategy_runner.resample_h4`），勿直接读 4h 表算 ATR
