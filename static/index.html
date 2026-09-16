@@ -64,6 +64,22 @@
   .stat-card { border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; min-width: 110px; }
   .stat-card .k { color: var(--muted); font-size: 11px; }
   .stat-card .v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat-card .sub { color: var(--muted); font-size: 11px; font-weight: 400; }
+  #subnav { padding: 6px 16px; border-bottom: 1px solid var(--border); }
+  .subtab { padding: 3px 12px; border-radius: 6px; cursor: pointer; color: var(--muted); font-size: 13px; user-select: none; }
+  .subtab:hover { color: var(--text); }
+  .subtab.active { background: var(--accent); color: #fff; }
+  #strategy-panel { border-top: 1px solid var(--border); padding: 10px 16px; }
+  .strat-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 2px 0 8px; }
+  .strat-name { font-weight: 600; font-size: 15px; }
+  .badge { display: inline-block; padding: 1px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; line-height: 1.6; }
+  .badge.running { background: rgba(38, 166, 154, 0.15); color: var(--up); }
+  .badge.dry { background: rgba(230, 184, 0, 0.15); color: #e6b800; }
+  .badge.env-demo { background: rgba(41, 98, 255, 0.15); color: #7aa2ff; }
+  .badge.env-real { background: rgba(255, 82, 82, 0.18); color: #ff8a8a; }
+  .cond-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin: 4px 0; font-size: 13px; }
+  .cond-row { display: flex; gap: 10px; margin: 2px 0; }
+  .cond-label { color: var(--muted); font-weight: 500; flex: none; }
 </style>
 </head>
 <body class="demo-env">
@@ -82,6 +98,10 @@
   <div id="quote" class="quote"></div>
   <div id="ws-state" class="ws-state bad"><span class="ws-dot"></span><span id="ws-text">连接中</span></div>
 </nav>
+<div id="subnav" class="tabs">
+  <div id="subtab-watch" class="subtab active" onclick="showSubTab('watch')">盯盘</div>
+  <div id="subtab-strategy" class="subtab" onclick="showSubTab('strategy')">当前运行策略</div>
+</div>
 <div id="chart"></div>
 <div id="panel">
   <div class="acct-row" id="acct-row"></div>
@@ -127,6 +147,7 @@
     <tbody id="closed-body"><tr><td colspan="7" style="color:var(--muted)">加载中…</td></tr></tbody>
   </table>
 </div>
+<div id="strategy-panel" style="display:none"></div>
 <footer id="csv-note"></footer>
 
 <script src="/static/vendor/lightweight-charts.standalone.production.js"></script>
@@ -147,6 +168,7 @@ let wsSymbol = null;
 let wsReconnectTimer = null;
 let constraintsData = null;
 let tradePriceLines = [];
+let activeSubTab = "watch";
 
 const chart = LightweightCharts.createChart(document.getElementById("chart"), {
   layout: { background: { color: "var(--bg)" }, textColor: "#787b86" },
@@ -447,6 +469,7 @@ function switchEnv(env) {
   loadConstraints();
   loadPanel();
   checkHealth();
+  if (activeSubTab === "strategy") loadStrategyPanel();
 }
 
 async function loadPanel() {
@@ -530,6 +553,120 @@ async function loadPanel() {
   }
 }
 
+// —— 当前运行策略子页 ——
+function showSubTab(name) {
+  activeSubTab = name;
+  document.getElementById("subtab-watch").classList.toggle("active", name === "watch");
+  document.getElementById("subtab-strategy").classList.toggle("active", name === "strategy");
+  document.getElementById("chart").style.display = name === "watch" ? "" : "none";
+  document.getElementById("panel").style.display = name === "watch" ? "" : "none";
+  document.getElementById("strategy-panel").style.display = name === "strategy" ? "" : "none";
+  if (name === "strategy") loadStrategyPanel();
+}
+
+function formatDuration(minutes) {
+  if (minutes == null) return "—";
+  const v = Number(minutes);
+  if (!Number.isFinite(v)) return "—";
+  const total = Math.floor(v);
+  if (total < 1) return "<1分";
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return h > 0 ? `${h}小时${m}分` : `${m}分`;
+}
+
+async function loadStrategyPanel() {
+  const el = document.getElementById("strategy-panel");
+  try {
+    const r = await fetch("/api/strategy/performance");
+    if (!r.ok) throw new Error("http " + r.status);
+    renderStrategyPanel(await r.json());
+  } catch {
+    el.innerHTML = `<div class="hint" style="padding:8px 0">策略数据加载失败</div>`;
+  }
+}
+
+// 硬性约束：任何策略数值参数（ATR 倍数/带宽/be_pips 等）不得展示，仅定性条件与手数/绩效
+const ARM_STATES = {
+  holding: ["持仓中", "var(--up)"],
+  in_flight: ["发单中", "#e6b800"],
+  waiting: ["等待信号", "var(--muted)"],
+};
+
+function renderStrategyPanel(data) {
+  const el = document.getElementById("strategy-panel");
+  if (!data || !data.enabled || data.symbol !== activeSymbol) {
+    let msg = "该品种当前未运行策略";
+    if (data && data.enabled && data.symbol) msg += `，当前策略运行于 ${data.symbol}`;
+    el.innerHTML = `<div class="hint" style="padding:10px 0">${msg}</div>`;
+    return;
+  }
+  const st = data.stats || {};
+  const digits = DIGITS[data.symbol] ?? 5;
+  const isPriceUnit = st.excursion_unit === "price";
+  const dash = `<span style="color:var(--muted)">—</span>`;
+  const card = (label, valueHtml, sub) =>
+    `<div class="stat-card"><div class="k">${label}</div><div class="v">${valueHtml}</div>` +
+    (sub ? `<div class="sub">${sub}</div>` : "") + `</div>`;
+  const signed = v => (v > 0 ? "+" : "") + Number(v).toFixed(2);
+  const pnlCard = (label, v) => (v == null || v === 0)
+    ? card(label, dash)
+    : card(label, `<span style="color:${v > 0 ? "var(--up)" : "var(--down)"}">${signed(v)}</span>`);
+  const excCard = (label, v) => (v == null || v === 0)
+    ? card(label, dash)
+    : card(label, isPriceUnit ? Number(v).toFixed(digits) : `${v} pips`);
+  const wrSub = (st.wins != null && st.closed_cnt != null) ? `${st.wins}/${st.closed_cnt}` : "";
+  const head =
+    `<div class="strat-head"><span class="strat-name">quad · H4 波动率通道回归</span>` +
+    (data.dry_run
+      ? `<span class="badge dry">观察模式（只记录不发单）</span>`
+      : `<span class="badge running">运行中</span>`) +
+    `<span class="badge ${data.env === "real" ? "env-real" : "env-demo"}">${String(data.env || "—").toUpperCase()}</span>` +
+    (data.last_eval_ts
+      ? `<span class="hint">最后信号评估 ${new Date(data.last_eval_ts * 1000).toLocaleTimeString("zh-CN", { hour12: false })}</span>`
+      : "") +
+    `</div>`;
+  const armRows = (data.arms || []).map(a => {
+    const dirCls = a.direction === "short" ? "pos-sell" : "pos-buy";
+    const dirTxt = a.direction === "short" ? "空" : "多";
+    const state = ARM_STATES[a.state] || [a.state || "—", "var(--muted)"];
+    return `<tr><td>${a.name ?? "—"}</td><td class="${dirCls}">${dirTxt}</td>` +
+      `<td style="color:${state[1]}">${state[0]}</td></tr>`;
+  }).join("");
+  const perfRow =
+    pnlCard("策略总盈亏", st.total_pnl) +
+    pnlCard("已实现", st.realized_pnl) +
+    pnlCard("浮动", st.unrealized_pnl) +
+    ((st.winrate == null || st.winrate === 0) ? card("胜率", dash, wrSub)
+      : card("胜率", (st.winrate * 100).toFixed(1) + "%", wrSub)) +
+    ((st.avg_holding_minutes == null || st.avg_holding_minutes === 0) ? card("平均持仓", dash)
+      : card("平均持仓", formatDuration(st.avg_holding_minutes))) +
+    excCard("平均正向波动", st.avg_mfe) +
+    excCard("平均反向波动", st.avg_mae) +
+    excCard("最大正向波动", st.max_mfe) +
+    excCard("最大反向波动", st.max_mae) +
+    ((st.closed_cnt == null || st.closed_cnt === 0) ? card("已平仓笔数", dash) : card("已平仓笔数", st.closed_cnt + " 笔")) +
+    ((st.open_cnt == null || st.open_cnt === 0) ? card("在持笔数", dash) : card("在持笔数", String(st.open_cnt)));
+  el.innerHTML = head +
+    `<div class="hint" style="margin:10px 0 4px">臂状态</div>` +
+    `<table><thead><tr><th>臂</th><th>方向</th><th>状态</th></tr></thead>` +
+    `<tbody>${armRows || `<tr><td colspan="3" style="color:var(--muted)">无</td></tr>`}</tbody></table>` +
+    `<div class="hint" style="margin:10px 0 4px">交易条件</div>` +
+    `<div class="cond-card">` +
+    `<div class="cond-row"><span class="cond-label">入场</span><span>H4 波动率通道回归——前一根 1m 收盘价突破通道后收回通道内，即按该臂方向市价入场（各臂独立触发，单向单仓）。</span></div>` +
+    `<div class="cond-row"><span class="cond-label">出场</span><span>入场时按当时波动幅度锁定止损与止盈（服务器侧执行）；浮盈达标后由 guard 自动推保本；止损只收紧不放宽。</span></div>` +
+    `</div>` +
+    `<div class="hint" style="margin:10px 0 4px">概要</div>` +
+    `<div class="stats-row">` +
+    (data.lots == null ? card("手数", dash) : card("手数", `${data.lots} 标准手/臂`, data.quantity == null ? "" : `${data.quantity} units`)) +
+    card("策略环境", String(data.env || "—").toUpperCase()) +
+    `</div>` +
+    (data.dry_run ? `<div class="hint warn" style="margin:6px 0">观察模式不下单，绩效为空属正常</div>` : "") +
+    `<div class="hint" style="margin:10px 0 4px">绩效</div>` +
+    `<div class="stats-row">${perfRow}</div>` +
+    `<div class="hint" style="margin-top:8px">波动口径：持仓期间 1m K 线相对开仓价的有利（正向）/不利（反向）偏移；早于本地K线覆盖期的记录不计入波动统计</div>`;
+}
+
 function buildTabs() {
   const symBox = document.getElementById("symbol-tabs");
   SYMBOLS.forEach(s => {
@@ -543,6 +680,7 @@ function buildTabs() {
       loadConstraints();
       symBox.querySelectorAll(".tab").forEach(e => e.classList.toggle("active", e.textContent === s));
       loadCandles().then(connectWs);
+      if (activeSubTab === "strategy") loadStrategyPanel();
     };
     symBox.appendChild(t);
   });
@@ -573,7 +711,10 @@ function buildTabs() {
   loadPanel();
   checkHealth();
   setInterval(checkHealth, 5000);
-  setInterval(loadPanel, 3000);
+  setInterval(() => {
+    loadPanel();
+    if (activeSubTab === "strategy") loadStrategyPanel();
+  }, 3000);
 })();
 </script>
 </body>
