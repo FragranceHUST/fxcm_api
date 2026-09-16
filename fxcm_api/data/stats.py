@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import math
+import time
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 
@@ -85,6 +87,89 @@ def compute_stats(closed_trades: list[dict], open_trades: list[dict] | None = No
         "total_pnl": round(realized + unrealized, 2),
         "daily_pnl": daily,
         "avg_holding_minutes": round(avg_holding / 60.0, 1),
+    }
+    return {k: _finite(v) for k, v in result.items()}
+
+
+def epoch_of(ts) -> float | None:
+    """datetime/int/float → epoch 秒；naive datetime 视为 UTC（FXCM 返回 UTC，
+    勿回落本地时区）；None/解析失败 → None。"""
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        try:
+            return (ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)).timestamp()
+        except Exception:
+            return None
+    try:
+        return float(ts)
+    except (TypeError, ValueError):
+        return None
+
+
+def _holding_seconds_strict(t: dict) -> float | None:
+    """_holding_seconds 同口径，但缺时间字段返回 None（调用方剔除该样本）。"""
+    o, c = t.get("open_time"), t.get("close_time")
+    if not (hasattr(o, "timestamp") and hasattr(c, "timestamp")):
+        return None
+    return _holding_seconds(t)
+
+
+def compute_strategy_stats(closed_trades: list[dict], open_trades: list[dict],
+                           candle_window: Callable[[float, float], tuple[float, float] | None],
+                           now: float | None = None) -> dict:
+    """策略子集绩效：盈亏/胜率/持仓 + MFE/MAE 正反向波动（1m bid K 线口径）。
+
+    candle_window(open_ts, close_ts) 返回窗口内 (max_high, min_low) 或 None（无数据）。
+    多头 mfe=max_high-open_rate、mae=open_rate-min_low；空头反向；负值钳 0；
+    窗口无数据的笔不计入 excursion 样本（单独计数）。未平仓笔 close_ts 用 now。
+    """
+    now = time.time() if now is None else float(now)
+    closed_trades = closed_trades or []
+    open_trades = open_trades or []
+    pls = [float(t.get("gross_pl") or 0.0) for t in closed_trades]
+    wins = sum(1 for p in pls if p > 0)
+    losses = sum(1 for p in pls if p < 0)
+    realized = sum(pls)
+    unrealized = sum(float(t.get("gross_pl") or 0.0) for t in open_trades)
+
+    holds = [h for t in closed_trades if (h := _holding_seconds_strict(t)) is not None]
+    avg_holding = sum(holds) / len(holds) if holds else 0.0
+
+    mfes: list[float] = []
+    maes: list[float] = []
+    for t, close_ts in ([(t, epoch_of(t.get("close_time"))) for t in closed_trades]
+                        + [(t, now) for t in open_trades]):
+        open_ts = epoch_of(t.get("open_time"))
+        if open_ts is None or close_ts is None:
+            continue
+        window = candle_window(open_ts, close_ts)
+        if window is None:
+            continue
+        max_high, min_low = float(window[0]), float(window[1])
+        rate = float(t.get("open_rate") or 0.0)
+        if t.get("is_buy"):
+            mfe, mae = max_high - rate, rate - min_low
+        else:
+            mfe, mae = rate - min_low, max_high - rate
+        mfes.append(max(0.0, mfe))
+        maes.append(max(0.0, mae))
+
+    result = {
+        "closed_cnt": len(closed_trades),
+        "open_cnt": len(open_trades),
+        "wins": wins,
+        "losses": losses,
+        "winrate": round(wins / len(pls), 4) if pls else 0.0,
+        "realized_pnl": round(realized, 2),
+        "unrealized_pnl": round(unrealized, 2),
+        "total_pnl": round(realized + unrealized, 2),
+        "avg_holding_minutes": round(avg_holding / 60.0, 1),
+        "avg_mfe": round(sum(mfes) / len(mfes), 6) if mfes else 0.0,
+        "avg_mae": round(sum(maes) / len(maes), 6) if maes else 0.0,
+        "max_mfe": round(max(mfes), 6) if mfes else 0.0,
+        "max_mae": round(max(maes), 6) if maes else 0.0,
+        "excursion_samples": len(mfes),
     }
     return {k: _finite(v) for k, v in result.items()}
 

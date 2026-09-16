@@ -31,13 +31,14 @@ from fxcm_api.config import DaemonSettings, load_daemon_settings, load_strategy_
 from fxcm_api.data import backfill as backfill_module
 from fxcm_api.data.backfill import TF_SECONDS
 from fxcm_api.data.hub import MarketHub
-from fxcm_api.data.stats import compute_stats
+from fxcm_api.data.stats import compute_stats, compute_strategy_stats
 from fxcm_api.data.store import CandleStore
+from fxcm_api.pips import pip_size
 from fxcm_api.sessions import SessionManager, SessionWorker
 from fxcm_api.spread_recorder import SpreadRecorder
 from fxcm_api.stop_manager import StopManager
 from fxcm_api.stops import atr_from_candles
-from fxcm_api.strategy_runner import StrategyRunner
+from fxcm_api.strategy_runner import StrategyRunner, _detail_trade_id
 from fxcm_api.trade_service import (
     TriggerManager,
     cancel_order,
@@ -49,7 +50,7 @@ from fxcm_api.trade_service import (
     trade_constraints,
     working_orders,
 )
-from fxcm_api.trading import trade_is_buy
+from fxcm_api.trading import find_offer, trade_is_buy
 
 logger = logging.getLogger("fxcm_api.daemon")
 
@@ -84,7 +85,20 @@ def _positions_snapshot(fx) -> list[dict]:
             "limit": float(getattr(row, "limit", 0.0) or 0.0),
             "limit_order_id": getattr(row, "limit_order_id", "") or "",
             "gross_pl": row.gross_pl,
+            "custom_id": str(getattr(row, "custom_id", "") or ""),
         })
+    return out
+
+
+def _strategy_trade_ids(journal_rows: list[dict]) -> set[str]:
+    """journal 中 quad_entry 行归因出的策略 trade_id 集合。"""
+    out: set[str] = set()
+    for r in journal_rows or []:
+        if r.get("order_type") != "quad_entry":
+            continue
+        tid = _detail_trade_id(r.get("detail") or "")
+        if tid:
+            out.add(tid)
     return out
 
 
@@ -101,6 +115,72 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
     @app.get("/api/strategy")
     def strategy():
         return runner.status() if runner is not None else {"enabled": False}
+
+    @app.get("/api/strategy/performance")
+    def strategy_performance():
+        if runner is None:
+            return {"enabled": False}
+        s = runner.settings
+        env = s.env
+        worker = mgr.worker(env)
+        trade_ids = _strategy_trade_ids(store.get_journal(env=env, limit=2000))
+        closed: list[dict] = []
+        try:
+            closed = [t for t in _closed_trades(worker.fx, limit=2000)
+                      if str(t.get("trade_id")) in trade_ids
+                      or str(t.get("trade_id_origin") or "") in trade_ids]
+        except Exception:
+            logger.warning("[%s] 策略绩效：已平仓表读取失败（会话可能断开）", env, exc_info=True)
+        prefix = s.custom_id_prefix + "-"
+        open_trades: list[dict] = []
+        try:
+            open_trades = [p for p in _positions_snapshot(worker.fx)
+                           if str(p.get("trade_id")) in trade_ids
+                           or str(p.get("custom_id") or "").startswith(prefix)]
+        except Exception:
+            logger.warning("[%s] 策略绩效：持仓表读取失败（会话可能断开）", env, exc_info=True)
+
+        pip: float | None = None
+        try:
+            offer = find_offer(worker.fx, s.symbol)
+            pip = pip_size(s.symbol, float(offer.point_size), int(offer.digits),
+                           worker.guard.pip_overrides)
+        except Exception:
+            pip = None
+
+        def candle_window(o: float, c: float) -> tuple[float, float] | None:
+            bars = store.get_candles(s.symbol, 60, start_ts=int(o) - 60,
+                                     end_ts=int(c) + 60, limit=20000)
+            if not bars:
+                return None
+            return max(float(b.high) for b in bars), min(float(b.low) for b in bars)
+
+        stats = compute_strategy_stats(closed, open_trades, candle_window)
+        if pip is not None and pip > 0:
+            for key in ("avg_mfe", "avg_mae", "max_mfe", "max_mae"):
+                stats[key] = round(float(stats[key] or 0.0) / pip, 1)
+            stats["excursion_unit"] = "pips"
+        else:
+            stats["excursion_unit"] = "price"
+
+        status = runner.status()
+        arms_status = status.get("arms") or {}
+        arms = []
+        for arm in s.arms:
+            st = arms_status.get(arm.name) or {}
+            tid = st.get("trade_id")
+            state = "waiting"
+            if st.get("holding") or tid:
+                state = "holding"
+            elif st.get("in_flight"):
+                state = "in_flight"
+            arms.append({"name": arm.name, "direction": arm.direction,
+                         "state": state, "trade_id": str(tid) if tid else None})
+
+        return {"enabled": True, "symbol": s.symbol, "env": env, "dry_run": s.dry_run,
+                "quantity": s.quantity, "lots": round(s.quantity / 100000, 2),
+                "last_eval_ts": status.get("last_eval_ts"),
+                "arms": arms, "stats": stats}
 
     @app.get("/api/environments")
     def environments():
@@ -398,6 +478,7 @@ def _closed_trades(fx, limit: int = 500) -> list[dict]:
             "open_time": getattr(row, "open_time", None),
             "close_time": getattr(row, "close_time", None),
             "commission": float(getattr(row, "commission", 0.0) or 0.0),
+            "trade_id_origin": str(getattr(row, "trade_id_origin", "") or ""),
         })
     return out
 
