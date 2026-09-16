@@ -29,6 +29,9 @@ def _epoch_to_dt(ts: int) -> datetime:
 
 def _row_ts(value) -> int:
     if isinstance(value, datetime):
+        if value.tzinfo is None:
+            # fxcorepy get_date 返回 naive GMT；直接 .timestamp() 会按本地时区解释（UTC+8 下整体 -8h）
+            return int(value.replace(tzinfo=timezone.utc).timestamp())
         return int(value.timestamp())
     return int(float(value))
 
