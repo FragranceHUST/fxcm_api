@@ -33,6 +33,7 @@ from fxcm_api.data.hub import MarketHub
 from fxcm_api.data.stats import compute_stats
 from fxcm_api.data.store import CandleStore
 from fxcm_api.sessions import SessionManager, SessionWorker
+from fxcm_api.spread_recorder import SpreadRecorder
 from fxcm_api.stop_manager import StopManager
 from fxcm_api.trade_service import (
     TriggerManager,
@@ -325,6 +326,17 @@ def build_app(hub: MarketHub, mgr: SessionManager, store: CandleStore,
     return app
 
 
+def _hub_tick_provider(hub: MarketHub):
+    def provider() -> dict[str, tuple[float, float, float]]:
+        out: dict[str, tuple[float, float, float]] = {}
+        for symbol in hub.symbols:
+            tick = hub.last_tick(symbol)
+            if tick:
+                out[symbol] = (tick[0], tick[1], tick[2])
+        return out
+    return provider
+
+
 def _start_guard(worker: SessionWorker) -> None:
     if not worker.daemon_cfg.guard_enabled:
         return
@@ -455,6 +467,13 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=tm.run_loop, name="triggers", daemon=True).start()
         threading.Thread(target=_equity_sampler, args=(mgr, store),
                          name="equity-sampler", daemon=True).start()
+        if daemon_cfg.spread_log_interval_sec > 0:
+            recorder = SpreadRecorder(_hub_tick_provider(hub),
+                                      Path(daemon_cfg.data_dir) / "spread_log",
+                                      interval_sec=daemon_cfg.spread_log_interval_sec,
+                                      pip_overrides=mgr.demo.guard.pip_overrides)
+            threading.Thread(target=recorder.run_forever, name="spread-recorder",
+                             daemon=True).start()
         if daemon_cfg.startup_backfill_days > 0:
             threading.Thread(target=_startup_backfill,
                              args=(mgr, store, daemon_cfg.watch_symbols,
