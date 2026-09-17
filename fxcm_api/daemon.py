@@ -34,7 +34,7 @@ from fxcm_api.data.hub import MarketHub
 from fxcm_api.data.stats import compute_stats, compute_strategy_stats
 from fxcm_api.data.store import CandleStore
 from fxcm_api.pips import pip_size
-from fxcm_api.sessions import SessionManager, SessionWorker
+from fxcm_api.sessions import SessionManager, SessionWorker, fx_market_open
 from fxcm_api.spread_recorder import SpreadRecorder
 from fxcm_api.stop_manager import StopManager
 from fxcm_api.stops import atr_from_candles
@@ -425,6 +425,27 @@ def _hub_tick_provider(hub: MarketHub):
     return provider
 
 
+def _make_staleness_check(hub: MarketHub, threshold_s: float) -> Callable[[], bool]:
+    """数据面保鲜判定：交易时段内所有品种 tick 均停更超阈值 → True。
+
+    任一品种有新鲜 tick 即视为存活；从未收到 tick 的品种以启动时刻为基准，
+    天然获得启动宽限期。休市时段（周末/每日维护窗口）恒为 False。"""
+    start = time.time()
+
+    def check() -> bool:
+        if threshold_s <= 0 or not fx_market_open():
+            return False
+        now = time.time()
+        for symbol in hub.symbols:
+            tick = hub.last_tick(symbol)
+            ts = tick[2] if tick else start
+            if now - ts < threshold_s:
+                return False
+        return True
+
+    return check
+
+
 def _make_atr_provider(hub: MarketHub) -> Callable[[str], float | None]:
     def atr_provider(symbol: str) -> float | None:
         # 策略口径：H4 ATR(12) 只用已收桶（剔掉聚合器最后一根未收桶）
@@ -562,6 +583,8 @@ def main(argv: list[str] | None = None) -> int:
         store = CandleStore(Path(daemon_cfg.data_dir) / "candles.db")
         hub = MarketHub(mgr.real.fx, daemon_cfg.watch_symbols, store)
         mgr.real.on_reconnect = hub.resubscribe   # 会话重连后行情订阅随之换绑（否则行情永久停更）
+        mgr.real.staleness_check = _make_staleness_check(
+            hub, daemon_cfg.quote_stale_reload_sec)
         _start_guard(mgr.demo, hub)
         _start_guard(mgr.real, hub)
 
