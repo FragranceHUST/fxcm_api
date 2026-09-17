@@ -5,6 +5,7 @@ import unittest
 from forexconnect import fxcorepy
 
 from fxcm_api.trade_service import classify_entry, max_safe_amount, modify_tp
+from fxcm_api.trading import close_trade
 
 
 class TestClassifyEntry(unittest.TestCase):
@@ -133,6 +134,51 @@ class TestModifyTp(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertIn("止盈", r["error"])
         self.assertEqual(fx.calls, [])
+
+
+class TestCloseTrade(unittest.TestCase):
+    """close_trade：TRUE_MARKET_CLOSE 必须带 OFFER_ID（工厂校验），amount 缺省平全部。"""
+
+    class FakeFx:
+        def __init__(self, trades):
+            self._trades = trades
+            self.captured = None
+
+        def get_table(self, _name):
+            return self._trades
+
+        def create_order_request(self, **kwargs):
+            self.captured = kwargs
+            return "REQUEST"
+
+        def send_request(self, _request):
+            return "RESP"
+
+    @staticmethod
+    def make_trade(trade_id="T1", offer_id="O1", amount=1000):
+        return type("TradeRow", (), {
+            "trade_id": trade_id, "offer_id": offer_id, "amount": amount,
+        })()
+
+    def test_full_close_passes_offer_id_and_row_amount(self):
+        fx = self.FakeFx([self.make_trade()])
+        close_trade(fx, "ACC1", "T1")
+        kw = fx.captured
+        self.assertEqual(kw["order_type"], fxcorepy.Constants.Orders.TRUE_MARKET_CLOSE)
+        self.assertEqual(kw["OFFER_ID"], "O1")
+        self.assertEqual(kw["TRADE_ID"], "T1")
+        self.assertEqual(kw["AMOUNT"], 1000)
+        self.assertEqual(kw["ACCOUNT_ID"], "ACC1")
+
+    def test_partial_close_amount(self):
+        fx = self.FakeFx([self.make_trade(amount=1000)])
+        close_trade(fx, "ACC1", "T1", amount=400)
+        self.assertEqual(fx.captured["AMOUNT"], 400)
+
+    def test_missing_trade_raises(self):
+        fx = self.FakeFx([])
+        with self.assertRaises(RuntimeError):
+            close_trade(fx, "ACC1", "T1")
 
 
 if __name__ == "__main__":

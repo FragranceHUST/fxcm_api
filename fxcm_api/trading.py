@@ -58,12 +58,19 @@ def open_market(fx, account_id: str, symbol: str, is_buy: bool, amount: int) -> 
     logger.info("开仓请求已发送，响应=%s", repr(response))
 
 
-def close_trade(fx, account_id: str, trade_id: str, amount: int) -> None:
+def close_trade(fx, account_id: str, trade_id: str, amount: int | None = None) -> None:
+    """平仓（TRUE_MARKET_CLOSE）。工厂校验要求 OFFER_ID 与 AMOUNT——只传 TRADE_ID
+    会报 "OfferID or Symbol is absent"；amount 缺省平全部。"""
+    row = next((t for t in fx.get_table(ForexConnect.TRADES)
+                if str(t.trade_id) == str(trade_id)), None)
+    if row is None:
+        raise RuntimeError(f"持仓 {trade_id} 不存在（可能已平仓或 TRADES 表未刷新）")
     request = fx.create_order_request(
         order_type=fxcorepy.Constants.Orders.TRUE_MARKET_CLOSE,
         ACCOUNT_ID=account_id,
+        OFFER_ID=row.offer_id,
         TRADE_ID=trade_id,
-        AMOUNT=amount,
+        AMOUNT=int(amount if amount is not None else row.amount),
         CUSTOM_ID=CUSTOM_ID,
     )
     response = fx.send_request(request)
