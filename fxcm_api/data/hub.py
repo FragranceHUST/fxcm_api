@@ -28,15 +28,20 @@ class MarketHub:
         self.aggregators: dict[str, CandleAggregator] = {}
         self._offer_ids: dict[str, str] = {}
         self._ws_subscribers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
+        self._listener: TableListener | None = None
 
         for symbol in self.symbols:
             self.aggregators[symbol] = CandleAggregator(symbol)
 
-        self._listener = TableListener(on_changed_callback=self._on_changed)
         self._bind(fx)
         logger.info("OFFERS 订阅已建立：%s", ", ".join(self.symbols))
 
     def _bind(self, fx) -> None:
+        # 包装器陷阱：TableListener 首次 subscribe 后内部 _table 固定，再次 subscribe()
+        # 会静默忽略新表参数（forexconnect/TableListener.py L128），必须换新实例才能
+        # 绑定到新会话的表。旧 listener 随旧会话废弃；勿对死表调 unsubscribe（原生侧
+        # 可能已释放，有段错误风险）。
+        self._listener = TableListener(on_changed_callback=self._on_changed)
         self._offer_ids.clear()
         for symbol in self.symbols:
             offer = find_offer(fx, symbol)
@@ -115,4 +120,5 @@ class MarketHub:
         return self.aggregators[symbol].last_tick()
 
     def close(self) -> None:
-        self._listener.unsubscribe()
+        if self._listener is not None:
+            self._listener.unsubscribe()
